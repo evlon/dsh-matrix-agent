@@ -1,3 +1,5 @@
+packages:
+  - '.'
 minimumReleaseAgeExclude:
   - '@deepseek-ai/cordis@4.0.1'
   - '@deepseek-ai/cosmokit@1.8.2'
@@ -13,3 +15,4 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-typert-protocol@0.1.0-rc.6'
   - '@deepseek-ai/dsh-user-approval@0.1.0-rc.6'
   - '@deepseek-ai/schemastery@3.18.1'
+
