@@ -221,6 +221,15 @@ export class BridgeState {
     return undefined
   }
 
+  /** sessionId → roomId 全量映射（供任务快照/Web 视图跳转）。 */
+  sessionRoomsSnapshot(): Record<string, string> {
+    const out: Record<string, string> = {}
+    for (const [roomId, binding] of Object.entries(this.data.roomSessions)) {
+      out[binding.sessionId] = roomId
+    }
+    return out
+  }
+
   hasSeen(eventId: string): boolean {
     return this.data.processedEventIds.includes(eventId)
   }

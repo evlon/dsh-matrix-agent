@@ -24,6 +24,22 @@ export interface DigitalTwinAccount {
   model: string
 }
 
+/** 数字分身灵魂配置：性格、说话风格、口头禅、工作习惯。可经设置界面/yml 配置。 */
+export interface SoulConfig {
+  /** 是否启用灵魂注入（false 时完全不影响 prompt）。默认 true。 */
+  enabled: boolean
+  /** 性格/人设描述（自由文本，注入 system prompt）。 */
+  persona: string
+  /** 说话风格：简洁/亲切/正式/幽默/毒舌。 */
+  style: string
+  /** 口头禅（一句话，可选）。 */
+  catchphrase: string
+  /** 工作习惯（自由文本，如"先确认需求再动手，做完主动同步结论"）。 */
+  habits: string
+  /** 回复长度偏好：short/normal/detailed。 */
+  replyLength: string
+}
+
 /** dsh-matrix 插件配置。所有字段都可在 cordis.patch.yml 的行 config 中覆盖。 */
 export interface Config {
   /** Matrix homeserver 的 client-server API base URL。 */
@@ -102,6 +118,22 @@ export interface Config {
    * false：回退纯文本旧行为（token 更省、行为更保守）。默认 true。
    */
   preserveRichText: boolean
+
+  // ========== 数字分身灵魂 ==========
+  /** 灵魂配置（性格/风格/口头禅/习惯）。 */
+  soul?: SoulConfig
+
+  // ========== 社交记忆 ==========
+  /** 自己入群后是否主动 @ 成员做自我介绍。默认 true。 */
+  autoIntroduce: boolean
+  /** 自我介绍 @ 人数上限（超出截断并附「等 N 人」）。默认 20。 */
+  maxSelfIntroMentions: number
+  /** 是否记住成员资料（加入/资料变更 upsert）。默认 true。 */
+  memberMemory: boolean
+  /** 新成员（含其他数字人）入群时是否提示 agent 主动打招呼了解。默认 true。 */
+  autoGreet: boolean
+  /** 自我介绍模板；占位符 {{userId}}/{{role}}/{{owner}} 可替换。 */
+  selfIntroTemplate: string
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -142,4 +174,26 @@ export const Config: Schema<Config> = Schema.object({
   notifyRoomEvents: Schema.boolean().default(false),
   proactiveSendRequiresApproval: Schema.boolean().default(true),
   preserveRichText: Schema.boolean().default(true),
+
+  soul: Schema.object({
+    enabled: Schema.boolean().default(true),
+    persona: Schema.string().default('你是「百变员工」：会根据所在房间的名称、讨论氛围与收到的消息，自动选择最合适的人设与语气（比如在技术群里像靠谱的研发、在需求讨论里像产品经理、面对新同事像乐于帮助的前辈）。你不需要固定一种性格。'),
+    style: Schema.string().default(''),
+    catchphrase: Schema.string().default(''),
+    habits: Schema.string().default('先理解当前对话的语境与对象，再选择合适的人设与语气；如果切换了人设，主动用一句话告知对方你现在以什么角色出现，并提示可以在「数字分身」设置页修改灵魂。'),
+    replyLength: Schema.string().default('normal'),
+  }).default({
+    enabled: true,
+    persona: '你是「百变员工」：会根据所在房间的名称、讨论氛围与收到的消息，自动选择最合适的人设与语气（比如在技术群里像靠谱的研发、在需求讨论里像产品经理、面对新同事像乐于帮助的前辈）。你不需要固定一种性格。',
+    style: '',
+    catchphrase: '',
+    habits: '先理解当前对话的语境与对象，再选择合适的人设与语气；如果切换了人设，主动用一句话告知对方你现在以什么角色出现，并提示可以在「数字分身」设置页修改灵魂。',
+    replyLength: 'normal',
+  }),
+
+  autoIntroduce: Schema.boolean().default(true),
+  maxSelfIntroMentions: Schema.number().default(20),
+  memberMemory: Schema.boolean().default(true),
+  autoGreet: Schema.boolean().default(true),
+  selfIntroTemplate: Schema.string().default('大家好，我是 {{userId}}，很高兴加入这个群。以后有什么需要帮忙的尽管找我，我会尽力配合大家的工作！'),
 })

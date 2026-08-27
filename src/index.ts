@@ -22,12 +22,17 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { MatrixBridge } from './bridge.js'
 import type { Config as MatrixConfig, DigitalTwinAccount } from './config.js'
+import { registerSoul } from './soul.js'
+import { registerMatrixSettings } from './settings.js'
 
 export * from './auth-store.js'
 export * from './bridge.js'
 export * from './config.js'
 export * from './format.js'
 export * from './matrix.js'
+export * from './member-store.js'
+export * from './soul.js'
+export * from './settings.js'
 export * from './store.js'
 export * from './tools.js'
 
@@ -43,12 +48,32 @@ export function apply(ctx: Context, config: MatrixConfig): void {
   if (config.allowedUserIds.length === 0 && !config.allowAllUsers) {
     ctx.logger.warn('[dsh-matrix-agent] no allowlist configured: all inbound messages will be rejected (fail closed)')
   }
-  const twins: DigitalTwinAccount[] = config.digitalTwinMode ? (config.digitalTwins ?? []) : []
-  const bridge = new MatrixBridge(ctx, { ...config, accessToken: token, digitalTwins: twins })
+  // 设置层 merge：settings 用户层覆盖 yml config（若 settings 服务可用）。
+  const settingsHandle = registerMatrixSettings(ctx, config)
+  const mergedConfig: MatrixConfig = settingsHandle.getMerged()
+  // 灵魂子系统（行为统计 + 工具；配置从 merged config 读取，live 更新）。
+  const soulHandle = registerSoul(ctx, () => mergedConfig.soul ?? {
+    enabled: true,
+    persona: '你是「百变员工」：会根据所在房间的名称、讨论氛围与收到的消息，自动选择最合适的人设与语气（比如在技术群里像靠谱的研发、在需求讨论里像产品经理、面对新同事像乐于帮助的前辈）。你不需要固定一种性格。',
+    style: '',
+    catchphrase: '',
+    habits: '先理解当前对话的语境与对象，再选择合适的人设与语气；如果切换了人设，主动用一句话告知对方你现在以什么角色出现，并提示可以在「数字分身」设置页修改灵魂。',
+    replyLength: 'normal',
+  })
+  const twins: DigitalTwinAccount[] = mergedConfig.digitalTwinMode ? (mergedConfig.digitalTwins ?? []) : []
+  const bridge = new MatrixBridge(ctx, {
+    ...mergedConfig,
+    accessToken: token,
+    digitalTwins: twins,
+    soulHandle,
+    updateTasksSnapshot: settingsHandle.updateTasksSnapshot,
+  })
   ctx.effect(() => {
     void bridge.start()
     return () => {
       void bridge.stop()
+      soulHandle.dispose()
+      settingsHandle.dispose()
     }
   }, 'matrix-agent.serve')
 }

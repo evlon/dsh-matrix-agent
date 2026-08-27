@@ -61,12 +61,13 @@ export interface InboundMessage {
   readonly isEmote?: boolean
 }
 
-/** 群/房间成员变化与资料变更事件（入群/离群/邀请/改名换头像/房间信息）。
+/** 群/房间成员变化与资料变更事件（入群/离群/邀请/改名换头像/房间信息/自己入群）。
  * 由通道层在 /sync 的 state 或 timeline 中识别并投影，经 ChannelOptions.onRoomEvent 抛出。
  * 与消息事件（InboundMessage）分离：成员/资料事件不经过消息去重环（用独立 eventId 去重），
  * 且由桥接层按 notifyRoomEvents 配置决定是否注入 agent。
+ * `self-join` 仅在本账号自己首次进入房间时投影（joinRoom 成功后），供桥接层触发自我介绍。
  */
-export type RoomEventKind = 'join' | 'leave' | 'invite' | 'profile' | 'room-name' | 'room-topic'
+export type RoomEventKind = 'join' | 'leave' | 'invite' | 'profile' | 'room-name' | 'room-topic' | 'self-join'
 
 export interface RoomEvent {
   readonly kind: RoomEventKind
@@ -731,6 +732,14 @@ export class MatrixChannel implements Channel {
       body: '{}',
     })
     if (!response.ok) throw new Error(`join HTTP ${response.status}`)
+    // 自己首次进入该房间：投影 self-join（供桥接层触发自我介绍）。
+    // joinRoom 只在收到 invite 时调用一次，天然不会重放。
+    this.options.onRoomEvent?.({
+      kind: 'self-join',
+      roomId,
+      eventId: `self-join-${roomId}-${Date.now()}`,
+      at: Date.now(),
+    })
   }
 
   /** 把 mxc:// URL 解析为可下载的 HTTP URL（经本 homeserver 媒体端点代理）。

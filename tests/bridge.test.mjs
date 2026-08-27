@@ -652,6 +652,8 @@ test('bridge: room event ignored when notifyRoomEvents=false', async () => {
       respondToAll: true,
       matrixTools: true,
       notifyRoomEvents: false, // 默认关闭
+      memberMemory: false,     // 关闭社交记忆，聚焦 notifyRoomEvents 门控本身
+      autoGreet: false,
     })
 
     const startPromise = bridge.start()

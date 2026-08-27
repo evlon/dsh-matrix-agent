@@ -11,6 +11,9 @@
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./client": {
+      "default": "./lib/client.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -20,14 +23,17 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
     "dev": "tsc -p tsconfig.json --watch",
-    "prepare": "tsc -p tsconfig.json",
-    "test": "tsc -p tsconfig.json && node --test"
+    "prepare": "tsc -p tsconfig.json && node scripts/build-client.mjs",
+    "test": "tsc -p tsconfig.json && node scripts/build-client.mjs && node --test"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
     }
   },
   "dependencies": {
@@ -42,6 +48,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.9.0"
   }
 }

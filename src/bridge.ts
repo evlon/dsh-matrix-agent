@@ -30,6 +30,10 @@ import { ChatLog } from './chatlog.js'
 import { BridgeState } from './store.js'
 import type { MatrixTask, AllowDenyRule } from './store.js'
 import { AuthStore } from './auth-store.js'
+import { MemberStore } from './member-store.js'
+import { soulText } from './soul.js'
+import type { SoulHandle } from './soul.js'
+import type { TasksSnapshot } from './settings.js'
 
 const APPROVE_RE = /^(批准|同意|approve|yes|ok)$/i
 const DENY_RE = /^(拒绝|驳回|deny|no|reject)$/i
@@ -84,6 +88,10 @@ const HELP_TEXT = [
   '/allow <人> <事> — 加白名单（人/事可填 * 通配）',
   '/deny <人> <事> — 加黑名单（人/事可填 * 通配）',
   '/rules — 查看黑白名单',
+  '',
+  '— 社交记忆 —',
+  '/memory — 查看本房间已记住的成员',
+  '/forget <userId> — 忘记某成员（仅 Owner）',
   '',
   '消息合并：以 `..` 结尾表示还有后续，以 `!!` 结尾表示立即提交，裸文本进入合并窗口。',
 ].join('\n')
@@ -253,6 +261,12 @@ export class AccountBridge {
   private readonly authStore: AuthStore
   private readonly channel: Channel
   private readonly allAccountIds: readonly string[]
+  /** 灵魂子系统句柄（index.ts 注册后传入），用于 agentSetup 注入灵魂 prompt。 */
+  private readonly soulHandle?: SoulHandle
+  /** 成员记忆库（记住每个房间里见过的成员）。 */
+  private readonly memberStore: MemberStore
+  /** 任务快照发布回调（由 MatrixBridge 传入，index.ts 提供 settings 写通道）。 */
+  private readonly publishTasksSnapshot?: (snapshot: TasksSnapshot) => void
   /** 诊断日志：写入 stateDir/diagnostics.log，供事后文件排查（无需运行终端）。 */
   private readonly diag: ReturnType<typeof getDiag>
   /** 近期聊天记录（按房间，最近一周）：与响应门控解耦，无论是否 @都记录，供 @时被引用。 */
@@ -316,6 +330,8 @@ export class AccountBridge {
     account: DigitalTwinAccount,
     allAccountIds: readonly string[],
     pendingRooms: Set<string>,
+    soulHandle?: SoulHandle,
+    publishTasksSnapshot?: (snapshot: TasksSnapshot) => void,
     fetchFn?: typeof fetch,
     sleep?: (ms: number) => Promise<void>,
   ) {
@@ -325,8 +341,11 @@ export class AccountBridge {
     this.authStore = authStore
     this.allAccountIds = allAccountIds
     this.pendingRooms = pendingRooms
+    this.soulHandle = soulHandle
+    this.publishTasksSnapshot = publishTasksSnapshot
     this.diag = getDiag('dsh-matrix-agent', config.stateDir)
     this.chatlog = new ChatLog(config.stateDir)
+    this.memberStore = new MemberStore(config.stateDir)
 
     this.userId = account.userId
     this.isMain = account.userId === config.userId
@@ -361,6 +380,11 @@ export class AccountBridge {
 
   async start(): Promise<void> {
     await this.state.load()
+    if (this.config.memberMemory !== false) {
+      await this.memberStore.load().catch((error: unknown) => {
+        this.ctx.logger.warn('[dsh-matrix-agent] member store load failed: %s', messageOf(error))
+      })
+    }
     // 恢复各房间任务队列到内存镜像（重启不丢审核进度）。
     for (const [roomId, tasks] of Object.entries(this.state.matrixTasksSnapshot())) {
       this.matrixTasks.set(roomId, tasks)
@@ -412,6 +436,11 @@ export class AccountBridge {
     await Promise.allSettled(handles.map((handle) => handle.dispose()))
     await this.channel.stop()
     await this.state.dispose()
+    if (this.config.memberMemory !== false) {
+      await this.memberStore.dispose().catch((error: unknown) => {
+        this.ctx.logger.warn('[dsh-matrix-agent] member store save failed: %s', messageOf(error))
+      })
+    }
   }
 
   private async connectWithRetry(): Promise<void> {
@@ -645,6 +674,21 @@ export class AccountBridge {
         throw new Error('agentPresets service is not available on the host context')
       }
       await presets.mount(agentCtx, preset)
+      // 灵魂注入：在 agent scope 上注册 system prompt section（仅对该 room agent 生效）。
+      // 用 agentCtx 的 systemPrompt（scope 化）注册，避免污染 GUI 会话。
+      const soul = this.soulHandle
+      if (soul !== undefined && soul.getSoulConfig().enabled !== false) {
+        const systemPrompt = agentCtx.get('systemPrompt') as
+          | { section(section: { name: string; order: number; text: string | (() => string) }): () => void }
+          | undefined
+        if (systemPrompt !== undefined) {
+          agentCtx.effect(() => systemPrompt.section({
+            name: 'twin:soul',
+            order: 5,
+            text: () => soulText(soul.getSoulConfig()),
+          }), 'matrix-agent.soul')
+        }
+      }
     }
   }
 
@@ -756,24 +800,55 @@ export class AccountBridge {
   /** ---------- 入站消息 ---------- */
 
   /**
-   * 处理房间成员/资料变更事件（入群/离群/改名换头像/邀请）。
+   * 处理房间成员/资料变更事件（入群/离群/改名换头像/邀请/自己入群）。
    * 门控：
-   *   - config.notifyRoomEvents 为 false 时直接忽略（事件已由通道层更新缓存）。
-   *   - 事件涉及的用户不在授权名单时不注入（不自动建会话，避免白名单外触发）。
-   *   - 注入前把连续事件合并（如多人同批 join）成一条，避免每次事件建一个 turn。
-   * 注入方式：向该房间已绑定的 agent followup 一条「系统事件」user 消息，
-   *   让 agent 能基于事件主动打招呼/回应（配合 prompt/skill 引导）。
+   *   - `self-join`（自己入群）：autoIntroduce 开启时主动 @ 成员自我介绍（独立于 notifyRoomEvents）。
+   *   - 成员记忆（memberMemory 开）：join/profile 事件 upsert 到 memberStore。
+   *   - `autoGreet` 开且房间已绑定 agent：新成员 join 注入系统事件引导主动打招呼。
+   *   - 其余注入（notifyRoomEvents 开）保持原行为。
    */
   private async handleRoomEvent(event: RoomEvent): Promise<void> {
+    const roomId = event.roomId
+    // 自己入群：主动自我介绍（@ 成员）。
+    if (event.kind === 'self-join') {
+      if (this.config.autoIntroduce !== false) {
+        this.diag.log(`handleRoomEvent room=${roomId} kind=self-join autoIntroduce=true`)
+        await this.selfIntroduce(roomId)
+      } else {
+        this.diag.log(`handleRoomEvent room=${roomId} kind=self-join autoIntroduce=false; skip`)
+      }
+      return
+    }
+    // 成员记忆：join/profile 记录成员（其他数字人也记）。
+    if (this.config.memberMemory !== false && event.userId !== undefined && event.userId !== this.userId) {
+      this.memberStore.upsert(roomId, {
+        userId: event.userId,
+        ...(event.detail?.displayName !== undefined ? { displayName: String(event.detail.displayName) } : {}),
+        ...(event.detail?.avatarUrl !== undefined ? { avatarUrl: String(event.detail.avatarUrl) } : {}),
+      })
+      this.memberStore.scheduleSave()
+      this.diag.log(`handleRoomEvent room=${roomId} kind=${event.kind} member-memory upsert ${event.userId}`)
+    }
+    // autoGreet：新成员 join（含新数字人）且房间已绑定 agent → 提示主动打招呼。
+    if (event.kind === 'join' && event.userId !== undefined && event.userId !== this.userId) {
+      if (this.config.autoGreet !== false && this.roomAgents.has(roomId)) {
+        const who = event.userId
+        const known = this.memberStore.remembered(roomId, who)
+        const text = `[系统事件] 新成员 ${who} 加入了本房间${known ? '（你之前见过 TA，可打招呼问候）' : '（这是你们第一次见面，请主动打个招呼，简单了解一下对方是谁、负责什么）'}。你可以主动向 TA 发一条消息互相认识。`
+        void this.deliverRoomEvent(roomId, text)
+        return
+      }
+    }
+    // 原有门控：notifyRoomEvents 关闭时忽略其余事件。
     if (!this.config.notifyRoomEvents) return
     // 事件涉及的成员需在授权名单（join/leave/profile/invite 有 userId）。
     if (event.userId !== undefined && !this.authorized(event.userId)) {
-      this.diag.log(`handleRoomEvent room=${event.roomId} kind=${event.kind} user=${event.userId} unauthorized; ignored`)
+      this.diag.log(`handleRoomEvent room=${roomId} kind=${event.kind} user=${event.userId} unauthorized; ignored`)
       return
     }
     // 房间信息事件（room-name/room-topic）没有 userId，用房间名判断是否已知房间。
-    if (event.userId === undefined && !this.roomAgents.has(event.roomId)) {
-      this.diag.log(`handleRoomEvent room=${event.roomId} kind=${event.kind} no bound agent; ignored`)
+    if (event.userId === undefined && !this.roomAgents.has(roomId)) {
+      this.diag.log(`handleRoomEvent room=${roomId} kind=${event.kind} no bound agent; ignored`)
       return
     }
     // 事件注入去重（用 eventId）：已见过则不重复注入。
@@ -781,7 +856,7 @@ export class AccountBridge {
     this.seenRoomEventIds.add(event.eventId)
 
     // 合并窗口：同一房间 3 秒内的成员事件合并成一条，避免 join/leave 刷屏建多 turn。
-    const key = event.roomId
+    const key = roomId
     const buf = this.roomEventBuffers.get(key) ?? { events: [], timer: undefined }
     buf.events.push(event)
     if (buf.timer !== undefined) clearTimeout(buf.timer)
@@ -789,6 +864,47 @@ export class AccountBridge {
       void this.flushRoomEvents(key)
     }, this.config.mergeTimeoutSecs * 1000)
     this.roomEventBuffers.set(key, buf)
+  }
+
+  /**
+   * 自己入群后的自我介绍：模板渲染 → @ 房间成员发送。
+   * @ 人数上限 maxSelfIntroMentions，超出截断并附「等 N 人」。
+   */
+  private async selfIntroduce(roomId: string): Promise<void> {
+    try {
+      const members = await this.channel.getRoomMembers?.(roomId)
+      if (members === undefined) {
+        this.diag.log(`selfIntroduce room=${roomId} no members; skip`)
+        return
+      }
+      const template = this.config.selfIntroTemplate ?? ''
+      const text = template
+        .replaceAll('{{userId}}', this.userId)
+        .replaceAll('{{role}}', this.isMain ? '主账号' : (this.owner !== undefined ? `数字分身（Owner: ${this.owner}）` : '数字分身'))
+        .replaceAll('{{owner}}', this.owner ?? '')
+      // 排除自己。
+      const targets = members.filter((m) => m.userId !== this.userId).map((m) => m.userId)
+      const cap = this.config.maxSelfIntroMentions ?? 20
+      const mentions = targets.slice(0, cap)
+      const rest = targets.length - mentions.length
+      const mentionText = mentions.length > 0
+        ? (rest > 0 ? `${text}\n（另有 ${rest} 位成员，很高兴认识大家！）` : text)
+        : text
+      this.diag.log(`selfIntroduce room=${roomId} targets=${targets.length} mentions=${mentions.length}`)
+      if (mentions.length > 0 && this.channel.sendMentionText !== undefined) {
+        await this.channel.sendMentionText(roomId, mentionText, mentions)
+      } else {
+        await this.channel.sendText(roomId, mentionText)
+      }
+      // 写 chatlog（分身自己发的消息也记录，便于回溯）。
+      this.chatlog.append(roomId, {
+        ts: Date.now(),
+        sender: `${this.userId} (self-intro)`,
+        text: mentionText,
+      })
+    } catch (error) {
+      this.ctx.logger.warn('[dsh-matrix-agent] selfIntroduce room=%s failed: %s', roomId, messageOf(error))
+    }
   }
 
   /** 把合并窗口内的房间事件组合成一条消息注入 agent。 */
@@ -811,6 +927,7 @@ export class AccountBridge {
       case 'join': return `新成员 ${who} 加入了本房间`
       case 'leave': return `成员 ${who} 离开了本房间`
       case 'invite': return `${who} 被邀请进本房间`
+      case 'self-join': return `你（${who}）已加入本房间`
       case 'profile':
         return `成员 ${who} 更新了资料（${Object.entries(e.detail ?? {}).map(([k, v]) => `${k}=${String(v)}`).join(', ')}）`
       case 'room-name': return `房间名称变更为「${String(e.detail?.name ?? '')}」`
@@ -865,7 +982,7 @@ export class AccountBridge {
           const target = join(dir, safe)
           await writeFile(target, buffer)
           this.diag.log(`describeMedia room=${roomId} saved=${target} size=${buffer.length}`)
-          parts.push(`[${label}: ${name} — 已保存到 ${target}]`)
+          parts.push(`[${label}: ${name} — 已保存到 ${target}｜mxc: ${m.mxc}]`)
           // 图片额外持久化为多模态附件，供视觉输入。
           if (m.msgtype === 'm.image') {
             const mediaType = normalizeImageMediaType(mimetype)
@@ -881,6 +998,9 @@ export class AccountBridge {
           continue
         } catch (error) {
           this.diag.log(`describeMedia room=${roomId} download failed: ${messageOf(error)}`)
+          // 下载失败：仍附 mxc 链接，供 agent 用 matrix_get_media 重新下载。
+          parts.push(`[${label}: ${name} 下载失败 — 可用 matrix_get_media 工具重下｜mxc: ${m.mxc}]`)
+          continue
         }
       }
       // 位置消息无 mxc，把坐标写进文本（geo_uri 形如 geo:37.78,-122.41;u=35）。
@@ -1053,6 +1173,12 @@ export class AccountBridge {
       }
 
       this.diag.log(`handleMessage room=${message.roomId} from=${message.sender} digitalTwinMode=${this.config.digitalTwinMode} text=${text.slice(0, 60).replace(/\n/g, ' ')}`)
+      // 成员记忆：消息来自其他成员时 upsert + 累计互动（记住每个人）。
+      if (this.config.memberMemory !== false && message.sender !== this.userId) {
+        this.memberStore.upsert(message.roomId, { userId: message.sender })
+        this.memberStore.bumpInteraction(message.roomId, message.sender)
+        this.memberStore.scheduleSave()
+      }
       // 记录近期聊天（与响应门控解耦：无论是否 @都存，供被人 @ 时回溯上下文）。
       // 编辑消息用新内容替换原 eventId 记录，避免任务面板与回溯上下文出现重复旧版。
       if (text.trim().length > 0) {
@@ -1179,6 +1305,24 @@ export class AccountBridge {
 
   private persistTasks(roomId: string): void {
     this.state.saveTasks(roomId, this.tasksOf(roomId))
+    this.publishTasks()
+  }
+
+  /**
+   * 发布任务快照（运行时镜像）：把本账号各房间任务 + session↔room 映射
+   * 写入 settings，供 DSH Web 的「任务」tab 与「所有任务」面板读取。
+   */
+  private publishTasks(): void {
+    if (this.publishTasksSnapshot === undefined) return
+    const rooms: Record<string, MatrixTask[]> = {}
+    for (const [roomId, tasks] of this.matrixTasks) {
+      rooms[roomId] = tasks
+    }
+    const sessionRooms: Record<string, string> = {}
+    for (const [sessionId, roomId] of Object.entries(this.state.sessionRoomsSnapshot())) {
+      sessionRooms[sessionId] = roomId
+    }
+    this.publishTasksSnapshot({ rooms, sessionRooms, updatedAt: Date.now() })
   }
 
   private findTask(roomId: string, taskId: string): MatrixTask | undefined {
@@ -1477,6 +1621,39 @@ export class AccountBridge {
       case '/rules':
         await reply(formatRules(this.state.listRules()))
         break
+      case '/memory': {
+        const records = this.memberStore.list(roomId)
+        if (records.length === 0) {
+          await reply('🧠 本房间暂无成员记忆（memberMemory 开启后会自动记住每个见过的成员）。')
+          break
+        }
+        const lines = records.map((r, i) => {
+          const name = r.displayName !== undefined && r.displayName !== '' ? r.displayName : r.userId
+          const note = r.note !== undefined && r.note !== '' ? ` · ${r.note}` : ''
+          const first = new Date(r.firstSeenAt).toLocaleDateString('zh-CN')
+          return `${i + 1}. ${name}（${r.userId}）· 首次 ${first} · 互动 ${r.interactionCount} 次${note}`
+        })
+        await reply(`🧠 本房间已记住 ${records.length} 位成员：\n${lines.join('\n')}\n\n命令：/forget <userId> 忘记某人`)
+        break
+      }
+      case '/forget': {
+        if (arg === '') {
+          await reply('用法：`/forget <userId>`（仅 Owner）')
+          break
+        }
+        if (this.owner !== undefined && sender !== this.owner) {
+          await reply('❌ 只有 Owner 可以忘记成员。')
+          break
+        }
+        const ok = this.memberStore.forget(roomId, arg)
+        if (ok) {
+          await this.memberStore.save().catch(() => {})
+          await reply(`✅ 已忘记 \`${arg}\`。`)
+        } else {
+          await reply(`⚠️ \`${arg}\` 不在本房间的成员记忆中。`)
+        }
+        break
+      }
       default:
         await reply(`未知命令 \`${command ?? ''}\`，发送 /help 查看帮助。`)
     }
@@ -1746,6 +1923,10 @@ export class AccountBridge {
 
 export interface MatrixBridgeOptions extends Config {
   readonly accessToken: string
+  /** 灵魂子系统句柄（可选；由 index.ts 注册后传入）。 */
+  readonly soulHandle?: SoulHandle
+  /** 任务快照写回调（可选）：任务变更时把各房间任务镜像写入 settings（供 Web 任务视图）。 */
+  readonly updateTasksSnapshot?: (snapshot: TasksSnapshot) => void
   /** 测试接缝：替换通道层的 fetch 与 sleep。 */
   readonly fetchFn?: typeof fetch
   readonly sleep?: (ms: number) => Promise<void>
@@ -1799,6 +1980,8 @@ export class MatrixBridge {
         mainAccount,
         allAccountIds,
         pendingRooms,
+        config.soulHandle,
+        config.updateTasksSnapshot,
         config.fetchFn,
         config.sleep,
       ),
@@ -1822,6 +2005,8 @@ export class MatrixBridge {
           { ...twin, accessToken: token },
           allAccountIds,
           pendingRooms,
+          config.soulHandle,
+          config.updateTasksSnapshot,
           config.fetchFn,
           config.sleep,
         ),

@@ -7,12 +7,16 @@ DeepSeek Harness（dsh）的 Matrix agent 桥接插件：把 Matrix 房间桥接
 ```
 src/
 ├── index.ts      # 插件入口（name/inject/apply/Config），无 default export
-├── bridge.ts     # 桥接层：多账号编排（AccountBridge）、入站路由（@提及/私聊）、审批、授权、媒体注入
+├── bridge.ts     # 桥接层：多账号编排（AccountBridge）、入站路由（@提及/私聊）、审批、授权、媒体注入、社交记忆、任务快照发布
 ├── matrix.ts     # 通道层：零依赖 Matrix client-server API 客户端（fetch + /sync 长轮询、媒体下载）
 ├── tools.ts      # 9 个 Matrix 工具（成员/消息/房间/用户查询、主动发送、媒体下载），经 ctx.tools.register 注册
-├── config.ts     # Schemastery 配置 schema（含数字分身 digitalTwins、媒体/工具开关）
+├── config.ts     # Schemastery 配置 schema（含数字分身 digitalTwins、灵魂 soul、社交记忆、媒体/工具开关）
+├── soul.ts       # 数字分身灵魂：灵魂 prompt 渲染、行为统计、twin_soul_status 工具、owner 推导纯函数
+├── settings.ts   # dsh-matrix 统一 settings namespace（账号/灵魂/社交 + 任务快照运行时镜像、live watch）
+├── member-store.ts # 成员记忆库（记住每个房间见过的成员，含其他数字人）
 ├── store.ts      # 文件落盘状态：房间↔会话映射、事件去重环、sync token
 ├── auth-store.ts # 记忆授权库：分身↔Owner、工具授权、红线判定
+├── client-main.js # 浏览器端源码（esbuild 打包为 __ModuleLoader__ bundle）：设置页（单入口+标签页）、会话任务 tab、所有任务面板
 └── format.ts     # 保守 markdown 子集 → Matrix HTML，收敛前缀长回复分段，媒体占位描述
 ```
 
@@ -105,7 +109,11 @@ src/
   - **L1 记忆授权**：非红线工具此前被批准过 → 静默放行（`auth-store.json` 持久化）
   - **L2 即时确认**：房间推送审批，配置了 `owner` 的账号**仅 Owner** 可应答，批准后写入记忆授权库
   - **L3 红线强制**：命中 `redlineTools`（默认 `bash`/`pwsh`/`write`/`edit`）→ **每次都必须确认**，批准永不入库
-- **命令**：`/help` `/status` `/new` `/clear` `/bind <session-id>` `/auth list` `/auth revoke <tool>` `/auth revoke-all`
+- **命令**：`/help` `/status` `/new` `/clear` `/bind <session-id>` `/auth list` `/auth revoke <tool>` `/auth revoke-all` `/memory` `/forget <userId>`
+- **数字分身灵魂**：`soul.*` 配置（性格/风格/口头禅/习惯）经 `agentSetup` 注入每个 room agent 的 system prompt（section `twin:soul`，仅 Matrix 会话生效，不污染 GUI）；行为统计（回复数/工具调用/活跃时间）按 `matrix-` 前缀 session 聚合，分身可调用 `twin_soul_status` 工具读取自身人设与统计
+- **社交记忆**：分身被邀请入群后按 `selfIntroTemplate` 主动 @ 成员自我介绍（上限 `maxSelfIntroMentions`）；`memberMemory` 开启时记住每个房间里见过的成员（含其他数字人），`/memory` 查看、`/forget <userId>` 忘记；`autoGreet` 开启时新成员入群会提示 agent 主动打招呼了解对方
+- **DSH Web 设置界面（单入口 + 标签页）**：Client 半注册一个「数字分身」设置页（`settings.section` `dsh-matrix`），内部三个标签页——**灵魂**（预设/性格/风格/口头禅/习惯 + 行为模式）、**Matrix 账号**（连接/模型路由/白名单）、**社交**（自我介绍/成员记忆/打招呼）。配置统一持久化到 `dsh-matrix` settings namespace（连接类字段需重启生效）。可选项尽量用下拉：`provider`/`model` 来自 dsh 运行时目录（`llm.providers`/`llm.models`），`agentPreset` 来自 `agentPresets.list`；**Owner 提供默认值提示**——分身账号为 `@ai-xxxxxx` 时提示默认主人 `@xxxxxx`（仅配置页辅助，运行期不推导，显式配置优先）
+- **任务视图（会话「任务」tab + 全局「所有任务」）**：点击 Matrix 会话后，在「对话 / 轨迹 / 树状视图」后新增「任务」tab，展示该房间任务列表与状态（待审/已批/执行中/完成/拒绝），支持「批准/拒绝」按钮（复用 `/approve N` `/reject N` 命令语义）；会话头部「所有任务」按钮弹出全局面板，聚合**所有会话**的任务、按状态筛选、点击跳转对应会话。数据源为 Host 把各房间任务队列写入 `dsh-matrix` settings 的 **`tasksSnapshot` 运行时镜像**（非用户配置；任务变更防抖 300ms 更新）
 - **可靠性**：事件 id 持久去重环、sync token 落盘重启续传、长回复 HTML 失败回退纯文本、sync 循环指数退避、LLM 受限重试熔断（`maxRetriesBeforeAbort`）
 
 ### Matrix 工具
@@ -182,6 +190,28 @@ allowBuilds:
 | `notifyRoomEvents` | `false` | 是否把入群/离群/资料变更等房间事件注入 agent 会话（供主动打招呼等） |
 | `proactiveSendRequiresApproval` | `true` | 主动消息工具（`matrix_send_dm`/`send_room_message`/`mention_member`）首用是否需 Owner 批准 |
 | `preserveRichText` | `true` | 是否保留富文本（`formatted_body`）/回复上下文/编辑语义，结构化注入 agent（类人信息完整）；`false` 回退纯文本 |
+| `soul.enabled` | `true` | 是否启用灵魂注入（性格/风格/口头禅/习惯注入 room agent 的 system prompt） |
+| `soul.persona` | `'你叫小灵…'` | 性格/人设描述（自由文本） |
+| `soul.style` | `'friendly'` | 说话风格：`concise`/`friendly`/`formal`/`humorous`/`sassy` |
+| `soul.catchphrase` | `'交给我吧'` | 口头禅（可选） |
+| `soul.habits` | `'先确认需求再动手…'` | 工作习惯（自由文本） |
+| `soul.replyLength` | `'short'` | 回复长度偏好：`short`/`normal`/`detailed` |
+
+**内置灵魂预设**（设置页「选择预设」一键填充，可再微调后保存）：
+
+| 预设 | 适用 |
+|---|---|
+| `default` 默认（综合助手） | 通用助手，靠谱有人情味 |
+| `pm` 产品经理 | 关注用户价值与目标拆解，习惯先对齐需求 |
+| `dev` 研发工程师 | 技术扎实、沟通直接，先说根因再给方案 |
+| `qa` 测试工程师 | 细心严谨，问题描述带复现步骤/预期/实际 |
+| `leader` 领导（负责人） | 看全局抓重点，协调资源推动决策 |
+| `newbie` 新入职员工 | 谦虚好学，持续学习完善，不懂就问 |
+| `autoIntroduce` | `true` | 自己入群后是否主动 @ 成员做自我介绍 |
+| `maxSelfIntroMentions` | `20` | 自我介绍 @ 人数上限（超出截断并附「等 N 人」） |
+| `memberMemory` | `true` | 是否记住成员资料（join/profile/消息 upsert，落盘 `member-memory.json`） |
+| `autoGreet` | `true` | 新成员（含其他数字人）入群时是否提示 agent 主动打招呼了解对方 |
+| `selfIntroTemplate` | 模板 | 自我介绍模板；`{{userId}}`/`{{role}}`/`{{owner}}` 占位符可替换 |
 
 ### 配置示例
 
@@ -231,11 +261,20 @@ digitalTwins:
 
 ```bash
 corepack pnpm install
-corepack pnpm test        # tsc + node --test（format 单测 + 假 homeserver 端到端）
-corepack pnpm build       # tsc，产物 lib/（提交入库，git 安装不跑构建时可直接加载）
+corepack pnpm test        # tsc + node --test（format 单测 + 假 homeserver 端到端）+ esbuild 打包 client
+corepack pnpm build       # tsc（lib/ 产物）+ esbuild 打包 src/client-main.js → lib/client.js
 ```
 
-改完代码必须重新 build 并重启 dsh 进程（ESM 缓存）。
+改完代码必须重新 build 并重启 dsh 进程（ESM 缓存 + web bundle 重新扫描）。
+
+> **Client 半构建约定**：dsh web 的 client-modules 加载器要求 `exports["./client"]`
+> 指向 `window.__ModuleLoader__.load({ id, factory })` 注册格式的自包含 bundle。
+> 本项目用 **esbuild** 打包：`src/client-main.js`（ES module 源码，`import React`）
+> → CJS bundle → banner/footer 包装成 `__ModuleLoader__.load` 格式 → `lib/client.js`
+> （见 `scripts/build-client.mjs`）。`react` 外部化（dsh 模块系统的 shell seed，
+> 由 factory(require) 注入，避免与 shell 的 React 实例冲突）；其余代码内联自包含。
+> 构建后自动 `node --check` 语法自检。改 client 半时改 `src/client-main.js`，不要改
+> `lib/client.js`。
 
 ## 已知限制与路线图
 
