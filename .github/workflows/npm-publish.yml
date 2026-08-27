@@ -1,0 +1,54 @@
+# 发布 dsh-matrix-agent 到公共 npm registry：推送版本 tag 时触发（也可手动）。
+#
+# 流程：
+#   1. `npm version <patch|minor|major>`  提升 package.json 版本并打 tag
+#   2. `git push --tags`                  触发本 workflow
+#   3. job 安装依赖、构建、测试、执行 `npm publish`
+#
+# 需要名为 `NPM_TOKEN` 的仓库 secret：
+#   npm token create                     （生成 automation token）
+#   -> Settings > Secrets and variables > Actions > New repository secret: NPM_TOKEN
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+
+jobs:
+  publish:
+    name: Build, test and publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance / attestation
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Test
+        run: pnpm test
+
+      - name: Publish to npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
