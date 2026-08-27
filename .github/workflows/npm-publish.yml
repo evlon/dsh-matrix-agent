@@ -38,7 +38,6 @@ jobs:
           # 对齐 GitHub Actions runner 的默认 Node 24（Node 20 已被弃用）。
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
-          cache: 'pnpm'
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
