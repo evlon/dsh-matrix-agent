@@ -1,0 +1,3 @@
+# 让 npm 忽略 .gitignore，改用本文件作为发布排除规则。
+# 否则 .gitignore 里的 cordis.patch.yml / lib 会被排除，导致发布包缺 bundle patch。
+# 发布包含项由 package.json 的 "files" 白名单控制（lib / cordis.patch.yml / README.md）。

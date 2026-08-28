@@ -7,16 +7,17 @@ DeepSeek Harness（dsh）的 Matrix agent 桥接插件：把 Matrix 房间桥接
 ```
 src/
 ├── index.ts      # 插件入口（name/inject/apply/Config），无 default export
-├── bridge.ts     # 桥接层：多账号编排（AccountBridge）、入站路由（@提及/私聊）、审批、授权、媒体注入、社交记忆、任务快照发布
+├── bridge.ts     # 桥接层：多账号编排（AccountBridge）、入站路由（@提及/私聊）、审批、授权、媒体注入、社交记忆、任务快照/时间线发布
 ├── matrix.ts     # 通道层：零依赖 Matrix client-server API 客户端（fetch + /sync 长轮询、媒体下载）
-├── tools.ts      # 9 个 Matrix 工具（成员/消息/房间/用户查询、主动发送、媒体下载），经 ctx.tools.register 注册
-├── config.ts     # Schemastery 配置 schema（含数字分身 digitalTwins、灵魂 soul、社交记忆、媒体/工具开关）
+├── tools.ts      # 10 个工具（成员/消息/房间/用户/媒体/时间线查询、主动发送），经 ctx.tools.register 注册
+├── config.ts     # Schemastery 配置 schema（含 digitalTwins、灵魂 soul、社交记忆、时间线、媒体/工具开关）
 ├── soul.ts       # 数字分身灵魂：灵魂 prompt 渲染、行为统计、twin_soul_status 工具、owner 推导纯函数
-├── settings.ts   # dsh-matrix 统一 settings namespace（账号/灵魂/社交 + 任务快照运行时镜像、live watch）
+├── settings.ts   # dsh-matrix 统一 settings namespace（账号/灵魂/社交 + 任务/时间线快照镜像、live watch）
+├── timeline.ts   # 自我时间线：跨房间记录分身出站动作（仅元数据，不落盘原文）
 ├── member-store.ts # 成员记忆库（记住每个房间见过的成员，含其他数字人）
 ├── store.ts      # 文件落盘状态：房间↔会话映射、事件去重环、sync token
 ├── auth-store.ts # 记忆授权库：分身↔Owner、工具授权、红线判定
-├── client-main.js # 浏览器端源码（esbuild 打包为 __ModuleLoader__ bundle）：设置页（单入口+标签页）、会话任务 tab、所有任务面板
+├── client-main.js # 浏览器端源码（esbuild 打包为 __ModuleLoader__ bundle）：设置页（单入口+标签页，含时间线 tab）、会话任务 tab、所有任务面板
 └── format.ts     # 保守 markdown 子集 → Matrix HTML，收敛前缀长回复分段，媒体占位描述
 ```
 
@@ -114,11 +115,14 @@ src/
 - **社交记忆**：分身被邀请入群后按 `selfIntroTemplate` 主动 @ 成员自我介绍（上限 `maxSelfIntroMentions`）；`memberMemory` 开启时记住每个房间里见过的成员（含其他数字人），`/memory` 查看、`/forget <userId>` 忘记；`autoGreet` 开启时新成员入群会提示 agent 主动打招呼了解对方
 - **DSH Web 设置界面（单入口 + 标签页）**：Client 半注册一个「数字分身」设置页（`settings.section` `dsh-matrix`），内部三个标签页——**灵魂**（预设/性格/风格/口头禅/习惯 + 行为模式）、**Matrix 账号**（连接/模型路由/白名单）、**社交**（自我介绍/成员记忆/打招呼）。配置统一持久化到 `dsh-matrix` settings namespace（连接类字段需重启生效）。可选项尽量用下拉：`provider`/`model` 来自 dsh 运行时目录（`llm.providers`/`llm.models`），`agentPreset` 来自 `agentPresets.list`；**Owner 提供默认值提示**——分身账号为 `@ai-xxxxxx` 时提示默认主人 `@xxxxxx`（仅配置页辅助，运行期不推导，显式配置优先）
 - **任务视图（会话「任务」tab + 全局「所有任务」）**：点击 Matrix 会话后，在「对话 / 轨迹 / 树状视图」后新增「任务」tab，展示该房间任务列表与状态（待审/已批/执行中/完成/拒绝），支持「批准/拒绝」按钮（复用 `/approve N` `/reject N` 命令语义）；会话头部「所有任务」按钮弹出全局面板，聚合**所有会话**的任务、按状态筛选、点击跳转对应会话。数据源为 Host 把各房间任务队列写入 `dsh-matrix` settings 的 **`tasksSnapshot` 运行时镜像**（非用户配置；任务变更防抖 300ms 更新）
+- **自我时间线（跨房间记忆，防脑裂）**：记录分身自己的出站动作——回复、工具调用、主动消息、自我介绍、审批、任务推送——到 `twin-timeline.jsonl`（**仅结构化元数据：kind/roomId/时间/工具名/长度/主体，不落盘任何聊天原文**，守住「聊天内容不落盘」红线）。**按主体分层**：`actor: secretary`（秘书的请示/确认/交付调度）vs `worker`（干活会话的执行回复/工具），`twin_timeline` 工具与时间线 UI 均可按主体筛选。**逐级暴露**：① 常驻 system prompt 段 `twin:memory`（恒定提示词，字节永不变化，不影响 KV 缓存命中率，仅告知"你有自我记忆可查"）；② 分身用 `twin_timeline` 工具查行动摘要；③ 细节用 `matrix_get_recent_messages` 现查对应房间。设置页「数字分身 → 时间线」tab 可查看/筛选（类型/主体/房间）/**删除单条/清空全部**（经 settings `timelineOps` 命令字段，Host 处理后清零）。配置：`timelineEnabled`（记录开关）、`timelineInject`（常驻提示词段开关）、`timelineCrossRoom`（跨房间共享门控，默认隔离）、`timelineCap`（内存上限）
+- **秘书编排（角色化会话 + 开工请示 + 交付确认）**：每个干活会话 = 一个角色化分身（`roomRoles` 房间→角色映射，如 `{ '!room:hs': 'dev' }`；未配置用百变员工；领导拉群跨岗时任务级 `role` 覆盖）。任务流转对齐真实工作场景：**开工前**私下 DM 老板（`matrix_send_dm`）请示要求/优先级（`taskClarifyBeforeStart`，超时按原任务开工）→ 执行（角色 persona + 老板开工指示注入干活会话）→ **交付前**私下 DM 老板结果摘要请求确认（`taskConfirmBeforeDeliver`，老板回「交付」则交付回原房间、回意见则修订、超时按 `taskConfirmTimeoutAction` hold/deliver/cancel）→ 对外交付。**多轮确认**：老板可多次给指示/意见（任务保持 clarifying/confirming，直到「批准开工」/「确认交付」才流转）。老板在私聊房的回复经 `ownerDmRoomId` 路由到对应任务（不污染任务队列）。任务状态含 `clarifying`(🤔请示中)/`confirming`(🔐待确认)。配置：`roomRoles`、`taskClarifyBeforeStart`、`taskClarifyTimeoutSecs`、`taskConfirmBeforeDeliver`、`taskConfirmTimeoutSecs`、`taskConfirmTimeoutAction`、`taskConfirmExemptMatters`
+- **秘书工作台 UI（大尺寸面板，合理利用桌面可视区）**：入口——**会话头部右上角快捷入口**（`conversation.session.header.utilities`）。点击弹出**大尺寸面板**（占可视区 ~68% 宽、全高、右滑 + 遮罩），**两栏布局（中间分隔条可拖拽调宽度，28%–72%）**：左栏任务列表（按流转分组：待审/🤔请示中/执行中/🔐待确认/完成/已拒绝，每行状态/角色/房间/工作目录状态）、右栏选中任务详情（完整文本/角色/房间/发起人/工作目录/老板指示与意见历史/操作按钮）。**任务 tab**：老板直接「批准开工/给指示/确认交付/给意见/批准/拒绝」+ **设工作目录**（未设目录任务输入路径绑定 cwd，等价于拖到工作区）；**时间线 tab**：自我记忆（主体秘书/干活筛选、删除/清空）。操作经 settings `secretaryOps` 命令字段（含 `set-cwd`），Host 处理后清零。私聊回复仍保留为备选（状态机幂等）。会话头部「所有任务」按钮已移除，由工作台统一
 - **可靠性**：事件 id 持久去重环、sync token 落盘重启续传、长回复 HTML 失败回退纯文本、sync 循环指数退避、LLM 受限重试熔断（`maxRetriesBeforeAbort`）
 
 ### Matrix 工具
 
-`matrixTools: true`（默认）时经 `ctx.tools.register` 注册以下 9 个工具，agent 既能看见 schema 也能直接调用执行体：
+`matrixTools: true`（默认）时经 `ctx.tools.register` 注册以下 10 个工具，agent 既能看见 schema 也能直接调用执行体：
 
 | 工具 | 说明 |
 |---|---|
@@ -131,6 +135,7 @@ src/
 | `matrix_mention_member` | 发消息并 @ 一个或多个成员（HTML `m.mention` 锚点 + `@名字` 文本兜底，校验目标都是房间成员） |
 | `matrix_list_rooms` | 列出已加入房间及名称/成员数 |
 | `matrix_get_media` | 下载 Matrix 媒体（`mxc://`）为本地文件并返回路径，或返回 base64 |
+| `twin_timeline` | 查自己的跨房间时间线（仅结构化元数据：回复/工具/主动消息/自我介绍/审批/任务），回忆自己在别处做过的事，防脑裂 |
 
 主动发送类工具（`matrix_send_dm`/`send_room_message`/`mention_member`）`isConcurrencySafe=false`（防并行重复发送），首用经 `proactiveSendRequiresApproval` 控制。
 

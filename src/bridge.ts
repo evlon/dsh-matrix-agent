@@ -31,12 +31,22 @@ import { BridgeState } from './store.js'
 import type { MatrixTask, AllowDenyRule } from './store.js'
 import { AuthStore } from './auth-store.js'
 import { MemberStore } from './member-store.js'
-import { soulText } from './soul.js'
+import { soulText, rolePersonaFor, SOUL_PRESET_IDS } from './soul.js'
 import type { SoulHandle } from './soul.js'
-import type { TasksSnapshot } from './settings.js'
+import type { TasksSnapshot, TimelineOps, SecretaryOps } from './settings.js'
+import { TwinTimeline } from './timeline.js'
+import type { TimelineKind } from './timeline.js'
 
 const APPROVE_RE = /^(批准|同意|approve|yes|ok)$/i
 const DENY_RE = /^(拒绝|驳回|deny|no|reject)$/i
+
+/**
+ * 自我时间线常驻提示词段（第 0 级暴露）：**恒定字符串**，内容与时间线无关，
+ * 字节永不变化 → 不影响 KV 缓存命中率。只告知能力，摘要/详情按需工具查。
+ */
+const TIMELINE_MEMORY_SECTION_TEXT =
+  '你有跨群的自我记忆。需要回忆自己做过的事时，用 twin_timeline 工具查询你的行动摘要；' +
+  '想深入了解某个房间的细节时，用 matrix_get_recent_messages 查询该房间。'
 
 /** 媒体 msgtype → 中文标签（入站媒体归一）。 */
 const MEDIA_LABELS: Record<string, string> = {
@@ -265,8 +275,12 @@ export class AccountBridge {
   private readonly soulHandle?: SoulHandle
   /** 成员记忆库（记住每个房间里见过的成员）。 */
   private readonly memberStore: MemberStore
+  /** 自我时间线（跨房间，仅元数据；MatrixBridge 传入的共享实例）。 */
+  private readonly timeline: TwinTimeline
   /** 任务快照发布回调（由 MatrixBridge 传入，index.ts 提供 settings 写通道）。 */
   private readonly publishTasksSnapshot?: (snapshot: TasksSnapshot) => void
+  /** 时间线快照发布回调（由 MatrixBridge 传入，index.ts 提供 settings 写通道）。 */
+  private readonly publishTimelineSnapshot?: (snapshot: { entries: unknown[]; updatedAt: number }) => void
   /** 诊断日志：写入 stateDir/diagnostics.log，供事后文件排查（无需运行终端）。 */
   private readonly diag: ReturnType<typeof getDiag>
   /** 近期聊天记录（按房间，最近一周）：与响应门控解耦，无论是否 @都记录，供 @时被引用。 */
@@ -331,7 +345,9 @@ export class AccountBridge {
     allAccountIds: readonly string[],
     pendingRooms: Set<string>,
     soulHandle?: SoulHandle,
+    timeline?: TwinTimeline,
     publishTasksSnapshot?: (snapshot: TasksSnapshot) => void,
+    publishTimelineSnapshot?: (snapshot: { entries: unknown[]; updatedAt: number }) => void,
     fetchFn?: typeof fetch,
     sleep?: (ms: number) => Promise<void>,
   ) {
@@ -342,7 +358,9 @@ export class AccountBridge {
     this.allAccountIds = allAccountIds
     this.pendingRooms = pendingRooms
     this.soulHandle = soulHandle
+    this.timeline = timeline ?? new TwinTimeline(config.stateDir, config.timelineCap ?? 500)
     this.publishTasksSnapshot = publishTasksSnapshot
+    this.publishTimelineSnapshot = publishTimelineSnapshot
     this.diag = getDiag('dsh-matrix-agent', config.stateDir)
     this.chatlog = new ChatLog(config.stateDir)
     this.memberStore = new MemberStore(config.stateDir)
@@ -385,10 +403,18 @@ export class AccountBridge {
         this.ctx.logger.warn('[dsh-matrix-agent] member store load failed: %s', messageOf(error))
       })
     }
+    if (this.config.timelineEnabled !== false) {
+      this.timeline.load()
+    }
     // 恢复各房间任务队列到内存镜像（重启不丢审核进度）。
     for (const [roomId, tasks] of Object.entries(this.state.matrixTasksSnapshot())) {
       this.matrixTasks.set(roomId, tasks)
     }
+    // 启动即发布一次快照（任务 + 时间线）：即使当前无活动，Client 也能读到
+    // 空/历史数据，而不是永远"加载中"。
+    this.publishTasks()
+    this.publishTimeline()
+    this.diag.log(`start: published initial snapshots (tasks rooms=${this.matrixTasks.size}, publishTasksSnapshot=${this.publishTasksSnapshot !== undefined}, publishTimelineSnapshot=${this.publishTimelineSnapshot !== undefined})`)
     // Matrix 专属工具：注册到 ToolRuntime（全局 layer），所有 agent 可见可调用。
     // 幂等守卫：多账号（主 + 分身）共享同一 ctx，只有主账号注册一次。
     if (this.isMain && !this.toolsRegistered) {
@@ -422,6 +448,17 @@ export class AccountBridge {
         approveProactiveSend: (toolName: string, args: Record<string, unknown>, exec: ToolRunContext) =>
           this.approveProactiveSend(toolName, args, exec),
         mediaDirForSession: (sessionId: string) => this.mediaDirForSession(sessionId),
+        queryTimeline: (filter) => {
+          const f = filter as { roomId?: string; kind?: string; actor?: string; limit?: number; since?: number }
+          const kinds: TimelineKind[] = ['reply', 'tool-call', 'proactive', 'self-intro', 'approval', 'task']
+          return this.timeline.query({
+            ...(f.roomId !== undefined ? { roomId: f.roomId } : {}),
+            ...(f.kind !== undefined && (kinds as string[]).includes(f.kind) ? { kind: f.kind as TimelineKind } : {}),
+            ...(f.actor === 'secretary' || f.actor === 'worker' ? { actor: f.actor } : {}),
+            ...(f.limit !== undefined ? { limit: f.limit } : {}),
+            ...(f.since !== undefined ? { since: f.since } : {}),
+          })
+        },
       })
       this.ctx.logger.info('[dsh-matrix-agent] matrix tools registered into ToolRuntime')
     }).catch((error: unknown) => {
@@ -676,17 +713,35 @@ export class AccountBridge {
       await presets.mount(agentCtx, preset)
       // 灵魂注入：在 agent scope 上注册 system prompt section（仅对该 room agent 生效）。
       // 用 agentCtx 的 systemPrompt（scope 化）注册，避免污染 GUI 会话。
-      const soul = this.soulHandle
-      if (soul !== undefined && soul.getSoulConfig().enabled !== false) {
-        const systemPrompt = agentCtx.get('systemPrompt') as
+      // 防御：agentCtx.get 在测试 mock/特殊上下文中可能不存在，缺失时跳过注入。
+      const getSystemPrompt = (): { section(section: { name: string; order: number; text: string | (() => string) }): () => void } | undefined => {
+        if (typeof agentCtx?.get !== 'function') return undefined
+        return agentCtx.get('systemPrompt') as
           | { section(section: { name: string; order: number; text: string | (() => string) }): () => void }
           | undefined
+      }
+      const soul = this.soulHandle
+      if (soul !== undefined && soul.getSoulConfig().enabled !== false) {
+        const systemPrompt = getSystemPrompt()
         if (systemPrompt !== undefined) {
           agentCtx.effect(() => systemPrompt.section({
             name: 'twin:soul',
             order: 5,
             text: () => soulText(soul.getSoulConfig()),
           }), 'matrix-agent.soul')
+        }
+      }
+      // 自我时间线常驻提示词段（第 0 级暴露）：恒定字符串，字节永不变化，
+      // 不影响 KV 缓存命中率；只告知能力，摘要/详情按需工具查。
+      // 高 order（尾部），避免其后的内容因顺序不稳定影响缓存前缀。
+      if (this.config.timelineEnabled !== false && this.config.timelineInject !== false) {
+        const systemPrompt = getSystemPrompt()
+        if (systemPrompt !== undefined) {
+          agentCtx.effect(() => systemPrompt.section({
+            name: 'twin:memory',
+            order: 1000,
+            text: TIMELINE_MEMORY_SECTION_TEXT,
+          }), 'matrix-agent.timeline-memory')
         }
       }
     }
@@ -1149,6 +1204,16 @@ export class AccountBridge {
         return
       }
 
+      // 老板私聊回复路由（秘书编排）：消息来自老板且房间是某任务的请示/确认房时，
+      // 回复按任务状态处理（开工指示 / 交付确认 / 修改意见），不进普通任务队列。
+      if (this.owner !== undefined && message.sender === this.owner) {
+        const taskInDm = this.findTaskByOwnerDm(message.roomId)
+        if (taskInDm !== undefined) {
+          await this.handleOwnerDmReply(message.roomId, taskInDm, stripped)
+          return
+        }
+      }
+
       // 工作目录选择回复：房间处于 cwdPending 时，编号即选定目录（Owner 操作）。
       const pending = this.cwdPending.get(message.roomId)
       if (pending !== undefined) {
@@ -1407,7 +1472,8 @@ export class AccountBridge {
   }
 
   /**
-   * 执行一条已批准任务：先确保工作目录已设定（新房间引导），再创建会话注入。
+   * 执行一条已批准任务：先确保工作目录已设定（新房间引导），
+   * 再走「开工前请示」（taskClarifyBeforeStart），最后创建会话注入执行。
    * 同一房间串行：runningTask 占用时排队等待 turn/end 释放。
    */
   private async executeTask(roomId: string, task: MatrixTask): Promise<void> {
@@ -1429,12 +1495,75 @@ export class AccountBridge {
       await this.pushTasks(roomId)
       return
     }
+    // 开工前请示：秘书私下问老板要求/优先级/范围；老板回复后注入执行，超时按原任务开始。
+    if (this.config.taskClarifyBeforeStart && this.owner !== undefined && task.status !== 'clarifying') {
+      const role = this.roleForTask(roomId, task)
+      const dm = await this.channel.sendDm?.(
+        this.owner,
+        `【任务请示】收到任务：\n${task.text}\n角色：${role}\n\n如果你有要求/优先级/范围补充，请回复；否则我将按任务原样开工。`,
+      )
+      if (dm !== undefined) {
+        // 秘书动作：记录时间线（仅元数据，actor=secretary）。
+        this.recordTimeline(dm.roomId, 'approval', { target: this.owner }, 0, 'secretary')
+        task.status = 'clarifying'
+        task.ownerDmRoomId = dm.roomId
+        task.role = role
+        this.persistTasks(roomId)
+        await this.pushTasks(roomId)
+        // 超时兜底：老板没回复 → 按原任务开始。
+        const timeout = this.config.taskClarifyTimeoutSecs ?? 120
+        setTimeout(() => {
+          const t = this.findTask(roomId, task.id)
+          if (t !== undefined && t.status === 'clarifying') {
+            t.status = 'approved'
+            t.note = '老板未在时限内回复，按原任务开工'
+            this.persistTasks(roomId)
+            void this.consumeNextTask(roomId)
+          }
+        }, timeout * 1000)
+        return
+      }
+    }
+    await this.startTaskExecution(roomId, task)
+  }
+
+  /** 实际开工：标记 approved/running 并把任务（含角色/老板指示）注入干活会话。 */
+  private async startTaskExecution(roomId: string, task: MatrixTask): Promise<void> {
     task.status = 'approved'
     this.runningTask.set(roomId, task.id)
     this.persistTasks(roomId)
-    const ctxPrompt = task.contextPrompt !== undefined ? `${task.contextPrompt}\n\n${task.text}` : task.text
+    const ctxPrompt = this.buildTaskPrompt(roomId, task)
     await this.deliver(roomId, ctxPrompt, task.sender)
     await this.pushTasks(roomId)
+  }
+
+  /** 构造任务注入文本：秘书模式（owner 已配置）加角色 + 工作方式 + 老板指示；否则原样注入。 */
+  private buildTaskPrompt(roomId: string, task: MatrixTask): string {
+    const body = task.contextPrompt !== undefined ? `${task.contextPrompt}\n\n${task.text}` : task.text
+    // 无 owner：非秘书模式，保持旧行为（直接任务内容）。
+    if (this.owner === undefined) return body
+    const role = this.roleForTask(roomId, task)
+    const rolePersona = rolePersonaFor(role)
+    const workStyle = [
+      '【工作方式】你是数字员工。',
+      `老板是 ${this.owner}（真实人）。`,
+      '- 开工前：若任务有歧义、需要优先级或资源，先私聊老板确认（matrix_send_dm 发给老板），再开工。',
+      '- 完成后：先私聊老板汇报结果并请求确认，老板确认后再在群里向同事交付。',
+      '- 未经老板确认，不要直接在群里对外交付重要结果。',
+    ].join('\n')
+    const clarify = task.clarifyReply !== undefined && task.clarifyReply !== ''
+      ? `\n【老板开工指示】${task.clarifyReply}`
+      : ''
+    const roleLine = `\n【本次任务角色】${role}：${rolePersona}`
+    return `${roleLine}\n${workStyle}\n\n【任务内容】\n${body}${clarify}`
+  }
+
+  /** 任务的执行角色：任务级 role > 房间固定角色 > 百变员工。 */
+  private roleForTask(roomId: string, task: MatrixTask): string {
+    if (task.role !== undefined && task.role !== '') return task.role
+    const roomRole = this.config.roomRoles?.[roomId]
+    if (roomRole !== undefined && roomRole !== '') return roomRole
+    return 'dynamic'
   }
 
   /** 候选工作目录：内核 workspaceRegistry 已登记的工作区 + 配置候选。 */
@@ -1455,12 +1584,18 @@ export class AccountBridge {
     return [...set]
   }
 
-  /** turn/end 后把当前 running 任务标完成，并消费下一条 approved 任务（严格串行）。 */
+  /** turn/end 后处理当前 running 任务：默认标记 done；若开启交付前确认则进入 confirming 私下请示老板。 */
   private async consumeNextTask(roomId: string): Promise<void> {
     const runningId = this.runningTask.get(roomId)
     if (runningId !== undefined) {
       const t = this.findTask(roomId, runningId)
       if (t !== undefined) {
+        const needsConfirm = this.shouldConfirmTask(t)
+        if (needsConfirm) {
+          await this.confirmBeforeDeliver(roomId, t)
+          this.runningTask.delete(roomId)
+          return
+        }
         t.status = 'done'
         this.persistTasks(roomId)
       }
@@ -1468,6 +1603,122 @@ export class AccountBridge {
     this.runningTask.delete(roomId)
     const next = this.tasksOf(roomId).find((t) => t.status === 'approved')
     if (next !== undefined) await this.executeTask(roomId, next)
+  }
+
+  /** 是否需要对任务做交付前确认：开关开 + 有 owner + 不在豁免清单。 */
+  private shouldConfirmTask(task: MatrixTask): boolean {
+    if (this.config.taskConfirmBeforeDeliver === false) return false
+    if (this.owner === undefined) return false
+    const exempt = this.config.taskConfirmExemptMatters ?? []
+    if (exempt.some((m) => m !== '' && task.text.includes(m))) return false
+    return true
+  }
+
+  /** 交付前确认：秘书私下 DM 老板结果摘要，老板确认后交付回原房间，给意见则修订。 */
+  private async confirmBeforeDeliver(roomId: string, task: MatrixTask): Promise<void> {
+    const deliverTo = task.deliverTo ?? roomId
+    const dm = await this.channel.sendDm?.(
+      this.owner!,
+      `【交付确认】任务完成：\n${task.text}\n\n完成情况：${task.result ?? '（已完成，结果见原房间）'}\n\n回复「交付」确认对外交付，或直接回复修改意见。`,
+    )
+    if (dm === undefined) {
+      // 私聊失败：直接交付（降级）。
+      task.status = 'done'
+      task.note = '交付确认 DM 失败，直接交付'
+      this.persistTasks(roomId)
+      await this.safeSend(deliverTo, `✅ 任务完成：\n${task.text}`, undefined, 'reply', undefined, 'secretary')
+      return
+    }
+    // 秘书动作：记录交付确认 DM（仅元数据，actor=secretary）。
+    this.recordTimeline(dm.roomId, 'approval', { target: this.owner! }, 0, 'secretary')
+    task.status = 'confirming'
+    task.ownerDmRoomId = dm.roomId
+    task.deliverTo = deliverTo
+    this.persistTasks(roomId)
+    await this.safeSend(roomId, '🔐 任务已完成，正在等老板确认后交付。', undefined, 'approval', undefined, 'secretary')
+    await this.pushTasks(roomId)
+    // 超时处理。
+    const timeout = this.config.taskConfirmTimeoutSecs ?? 600
+    const action = this.config.taskConfirmTimeoutAction ?? 'hold'
+    setTimeout(() => {
+      const t = this.findTask(roomId, task.id)
+      if (t === undefined || t.status !== 'confirming') return
+      if (action === 'deliver') {
+        t.status = 'done'
+        t.note = '老板超时未确认，自动交付'
+        this.persistTasks(roomId)
+        void this.safeSend(deliverTo, `✅ 任务完成：\n${t.text}`, undefined, 'reply', undefined, 'secretary')
+        void this.pushTasks(roomId)
+      } else if (action === 'cancel') {
+        t.status = 'rejected'
+        t.note = '老板超时未确认，任务取消'
+        this.persistTasks(roomId)
+        void this.safeSend(roomId, '🕐 老板超时未确认，任务已取消。', undefined)
+        void this.pushTasks(roomId)
+      }
+      // 'hold'：保持 confirming，群里已提示待确认。
+    }, timeout * 1000)
+  }
+
+  /** 老板确认交付：标记 done 并把结果交付回原房间。 */
+  private async deliverConfirmedTask(roomId: string, task: MatrixTask): Promise<void> {
+    task.status = 'done'
+    task.note = '老板已确认交付'
+    this.persistTasks(roomId)
+    const deliverTo = task.deliverTo ?? roomId
+    await this.safeSend(deliverTo, `✅ 任务完成（老板已确认）：\n${task.text}\n${task.result ?? ''}`, undefined, 'reply', undefined, 'secretary')
+    await this.pushTasks(roomId)
+    await this.consumeNextTask(roomId)
+  }
+
+  /** 查找老板私聊房对应的任务（clarifying/confirming 状态）。 */
+  private findTaskByOwnerDm(dmRoomId: string): MatrixTask | undefined {
+    for (const [roomId, tasks] of this.matrixTasks) {
+      const found = tasks.find((t) =>
+        (t.status === 'clarifying' || t.status === 'confirming') &&
+        t.ownerDmRoomId === dmRoomId,
+      )
+      if (found !== undefined) return found
+    }
+    return undefined
+  }
+
+  /** 处理老板在私聊房的回复：澄清回复 → 开工指示/批准；确认回复 → 交付；其它 → 修改意见。多轮确认。 */
+  private async handleOwnerDmReply(dmRoomId: string, task: MatrixTask, reply: string): Promise<void> {
+    const workRoomId = task.roomId
+    if (task.status === 'clarifying') {
+      // 多轮确认：老板回「批准/开工/ok」→ 开工；否则记录指示，继续留在 clarifying（可继续补充）。
+      const startWords = /^(批准|开工|开始|ok|可以|yes|go)$/i
+      if (startWords.test(reply.trim())) {
+        await this.safeSend(dmRoomId, `✅ 已批准，开始执行任务。`, undefined)
+        await this.startTaskExecution(workRoomId, task)
+        return
+      }
+      // 记录指示，留在 clarifying（多轮：老板可继续给要求，直到批准开工）。
+      task.clarifyReply = reply.trim() !== '' ? reply.trim() : task.clarifyReply
+      task.status = 'clarifying'
+      task.note = `老板指示（私聊）：${reply.slice(0, 40)}（可继续补充，或回复「批准」开工）`
+      this.persistTasks(workRoomId)
+      await this.safeSend(dmRoomId, `📝 已记录指示。你可以继续补充要求，或回复「批准」开工。`, undefined)
+      return
+    }
+    if (task.status === 'confirming') {
+      const confirmWords = /^(交付|可以|ok|确认|通过|yes|approve)$/i
+      if (confirmWords.test(reply.trim())) {
+        await this.safeSend(dmRoomId, '✅ 已确认，正在交付。', undefined)
+        await this.deliverConfirmedTask(workRoomId, task)
+        return
+      }
+      // 修改意见：注入干活会话让 agent 修订，再回到 confirming 等多轮确认。
+      task.confirmReply = reply
+      task.status = 'approved'
+      task.note = `老板修改意见：${reply.slice(0, 40)}，重新执行后再确认`
+      this.persistTasks(workRoomId)
+      await this.safeSend(dmRoomId, `🛠 已收到修改意见，重新执行后再确认。`, undefined)
+      await this.startTaskExecution(workRoomId, task)
+      return
+    }
+    // 其它状态：忽略（不进队列）。
   }
 
   /** ---------- 命令 ---------- */
@@ -1698,6 +1949,9 @@ export class AccountBridge {
          const step = (data.step as number) ?? 0
          if (callId !== '') this.toolNames.set(`${roomId}:${callId}`, name)
 
+         // 自我时间线：记录工具调用（仅工具名，不含参数；不落盘聊天内容）。
+         if (name !== '') this.recordTimeline(roomId, 'tool-call', { tool: name })
+
          // 工具执行由 harness 负责：harness 会调用 provider.execute(name, args) 取得结果，
          // 自行把 tool/result 追加回会话（dsh-llm 的 createToolResultMessage）。
          // 因此这里只做「观察」：记录工具调用 + 写 chatlog，绝不再自行 append，
@@ -1797,7 +2051,9 @@ export class AccountBridge {
     }
   }
 
-  private async safeSend(roomId: string, plain: string, html?: string): Promise<void> {
+  private async safeSend(roomId: string, plain: string, html?: string, kind?: TimelineKind, meta?: { tool?: string; target?: string }, actor?: 'secretary' | 'worker'): Promise<void> {
+    // 记录自我时间线（仅元数据，旁路；失败静默，绝不影响发送）。
+    this.recordTimeline(roomId, kind ?? 'reply', meta, plain.length, actor)
     try {
       await this.channel.sendText(roomId, plain, html)
     } catch (error) {
@@ -1809,6 +2065,127 @@ export class AccountBridge {
         }
       } else {
         this.ctx.logger.error('[dsh-matrix-agent] delivery failed: %s', messageOf(error))
+      }
+    }
+  }
+
+  /** 记录一条自我时间线（仅元数据；timelineEnabled 门控；旁路静默）。 */
+  private recordTimeline(roomId: string, kind: TimelineKind, meta?: { tool?: string; target?: string }, charCount?: number, actor?: 'secretary' | 'worker'): void {
+    if (this.config.timelineEnabled === false) return
+    this.timeline.record({
+      roomId,
+      kind,
+      ...(actor !== undefined ? { actor } : {}),
+      ...(meta?.tool !== undefined ? { tool: meta.tool } : {}),
+      ...(meta?.target !== undefined ? { target: meta.target } : {}),
+      ...(charCount !== undefined ? { charCount } : {}),
+    })
+    this.publishTimeline()
+  }
+
+  /** 把时间线快照发布到 settings（供设置页「时间线」tab 与任务视图）。 */
+  private publishTimeline(): void {
+    if (this.publishTimelineSnapshot === undefined) return
+    const snap = this.timeline.snapshot()
+    this.publishTimelineSnapshot({ entries: snap.entries, updatedAt: snap.updatedAt })
+  }
+
+  /** 执行时间线管理命令（来自设置页 UI，经 settings timelineOps 传递）。 */
+  handleTimelineOps(ops: TimelineOps): void {
+    if (this.config.timelineEnabled === false) return
+    if (ops.clearSeq !== 0) {
+      const cleared = this.timeline.clear()
+      if (cleared) {
+        this.diag.log(`handleTimelineOps clear seq=${ops.clearSeq}`)
+        this.publishTimeline()
+      }
+    }
+    if (Array.isArray(ops.removeIds)) {
+      let changed = false
+      for (const id of ops.removeIds) {
+        if (this.timeline.remove(id)) changed = true
+      }
+      if (changed) {
+        this.diag.log(`handleTimelineOps remove ids=${ops.removeIds.length}`)
+        this.publishTimeline()
+      }
+    }
+  }
+
+  /** 执行秘书工作台操作（来自 UI，经 settings secretaryOps 传递；幂等：非目标状态忽略）。 */
+  handleSecretaryOps(ops: SecretaryOps): void {
+    const { taskId, action, text, cwd } = ops
+    // 全账号查找目标任务（共享任务快照按 roomId 分组，这里扫所有账号）。
+    for (const [roomId, tasks] of this.matrixTasks) {
+      const task = tasks.find((t) => t.id === taskId)
+      if (task === undefined) continue
+      this.diag.log(`handleSecretaryOps task=${taskId} action=${action} status=${task.status}`)
+      switch (action) {
+        case 'approve-start': {
+          // clarifying → 直接开工（不注入指示）。
+          if (task.status !== 'clarifying') return
+          task.clarifyReply = undefined
+          task.status = 'approved'
+          task.note = '老板批准开工（工作台）'
+          this.persistTasks(roomId)
+          void this.startTaskExecution(roomId, task)
+          return
+        }
+        case 'give-instruction': {
+          // clarifying → 记录指示，**回到 clarifying**（多轮确认：老板可继续补充/调整，直到「批准开工」）。
+          if (task.status !== 'clarifying' || text === undefined || text.trim() === '') return
+          task.clarifyReply = text.trim()
+          task.status = 'clarifying'
+          task.note = `老板指示（工作台）：${text.slice(0, 40)}（可继续补充，或点「批准开工」启动）`
+          this.persistTasks(roomId)
+          void this.pushTasks(roomId)
+          return
+        }
+        case 'confirm-deliver': {
+          // confirming → 交付回原房间。
+          if (task.status !== 'confirming') return
+          task.confirmReply = '交付'
+          void this.deliverConfirmedTask(roomId, task)
+          return
+        }
+        case 'give-feedback': {
+          // confirming → 记录意见，**回到 confirming 的修订流程**（多轮：重新执行后再确认）。
+          if (task.status !== 'confirming' || text === undefined || text.trim() === '') return
+          task.confirmReply = text.trim()
+          task.status = 'approved'
+          task.note = `老板修改意见（工作台）：${text.slice(0, 40)}，重新执行后再确认`
+          this.persistTasks(roomId)
+          void this.startTaskExecution(roomId, task)
+          return
+        }
+        case 'set-cwd': {
+          // 未设工作目录的任务 → 绑定工作目录（pending/clarifying 可设）。
+          if (cwd === undefined || cwd.trim() === '') return
+          if (task.status !== 'pending' && task.status !== 'clarifying') return
+          this.state.setRoomCwd(roomId, cwd.trim())
+          task.cwd = cwd.trim()
+          task.note = `工作目录：${cwd.trim()}`
+          this.persistTasks(roomId)
+          void this.pushTasks(roomId)
+          return
+        }
+        case 'approve': {
+          // pending → 批准执行（复用 /approve 语义）。
+          if (task.status !== 'pending') return
+          void this.executeTask(roomId, task)
+          return
+        }
+        case 'reject': {
+          // pending → 拒绝。
+          if (task.status !== 'pending') return
+          task.status = 'rejected'
+          task.note = '老板拒绝（工作台）'
+          this.persistTasks(roomId)
+          void this.pushTasks(roomId)
+          return
+        }
+        default:
+          return
       }
     }
   }
@@ -1927,6 +2304,12 @@ export interface MatrixBridgeOptions extends Config {
   readonly soulHandle?: SoulHandle
   /** 任务快照写回调（可选）：任务变更时把各房间任务镜像写入 settings（供 Web 任务视图）。 */
   readonly updateTasksSnapshot?: (snapshot: TasksSnapshot) => void
+  /** 时间线快照写回调（可选）：时间线变更时写入 settings（供 Web 时间线 tab）。 */
+  readonly updateTimelineSnapshot?: (snapshot: { entries: unknown[]; updatedAt: number }) => void
+  /** 时间线管理命令回调（可选）：设置页 UI 删除/清空后由 Host 清零命令字段。 */
+  readonly onTimelineOpsHandled?: () => void
+  /** 秘书操作命令回调（可选）：工作台 UI 操作后由 Host 清零命令字段。 */
+  readonly onSecretaryOpsHandled?: () => void
   /** 测试接缝：替换通道层的 fetch 与 sleep。 */
   readonly fetchFn?: typeof fetch
   readonly sleep?: (ms: number) => Promise<void>
@@ -1958,6 +2341,8 @@ export class MatrixBridge {
     ]
     // 共享「房间有 pending 审批」集合：多账号协调审批应答归属。
     const pendingRooms = new Set<string>()
+    // 共享自我时间线（主 + 同进程分身共一份，都是本进程分身的活动）。
+    const timeline = new TwinTimeline(config.stateDir, config.timelineCap ?? 500)
 
     // 1. 挂载主账号（保持 state.json 名字，向后兼容）。
     //    按用户架构：userId 即数字分身自己，owner 是真实人账号（仅在 Matrix 客户端登录）。
@@ -1981,7 +2366,9 @@ export class MatrixBridge {
         allAccountIds,
         pendingRooms,
         config.soulHandle,
+        timeline,
         config.updateTasksSnapshot,
+        config.updateTimelineSnapshot,
         config.fetchFn,
         config.sleep,
       ),
@@ -2006,7 +2393,9 @@ export class MatrixBridge {
           allAccountIds,
           pendingRooms,
           config.soulHandle,
+          timeline,
           config.updateTasksSnapshot,
+          config.updateTimelineSnapshot,
           config.fetchFn,
           config.sleep,
         ),
@@ -2035,6 +2424,22 @@ export class MatrixBridge {
     })
 
     await Promise.all(this.accounts.map((account) => account.start()))
+  }
+
+  /** 分发时间线管理命令到各账号（共享 timeline，任一执行即可），执行后清零命令字段。 */
+  handleTimelineOps(ops: TimelineOps): void {
+    for (const account of this.accounts) {
+      account.handleTimelineOps(ops)
+    }
+    this.config.onTimelineOpsHandled?.()
+  }
+
+  /** 分发秘书操作到各账号（任务只在一个账号的队列里），执行后清零命令字段。 */
+  handleSecretaryOps(ops: SecretaryOps): void {
+    for (const account of this.accounts) {
+      account.handleSecretaryOps(ops)
+    }
+    this.config.onSecretaryOpsHandled?.()
   }
 
   async stop(): Promise<void> {

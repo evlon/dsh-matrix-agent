@@ -134,6 +134,32 @@ export interface Config {
   autoGreet: boolean
   /** 自我介绍模板；占位符 {{userId}}/{{role}}/{{owner}} 可替换。 */
   selfIntroTemplate: string
+
+  // ========== 自我时间线（跨房间记忆，仅元数据） ==========
+  /** 是否记录自我时间线（分身出站动作元数据，不落盘原文）。默认 true。 */
+  timelineEnabled: boolean
+  /** 是否在 room agent system prompt 注入 `twin:memory` 恒定提示词段（告知可查自我记忆）。默认 true。 */
+  timelineInject: boolean
+  /** 跨房间共享门控：false 时仅允许按房间查询（隔离），true 允许无 roomId 全量摘要。默认 false。 */
+  timelineCrossRoom: boolean
+  /** 时间线内存保留条数上限。默认 500。 */
+  timelineCap: number
+
+  // ========== 秘书编排（角色化会话 + 开工请示 + 交付确认） ==========
+  /** 房间 → 灵魂预设 id 的固定角色映射（如 { '!room:hs': 'dev' }）。默认空（百变员工）。 */
+  roomRoles: Record<string, string>
+  /** 开工前是否私下请示老板（矩阵 DM）。默认 true。 */
+  taskClarifyBeforeStart: boolean
+  /** 开工请示等待秒数；超时按原任务开始（不阻塞）。默认 120。 */
+  taskClarifyTimeoutSecs: number
+  /** 交付前是否私下确认老板。默认 true。 */
+  taskConfirmBeforeDeliver: boolean
+  /** 交付确认等待秒数。默认 600。 */
+  taskConfirmTimeoutSecs: number
+  /** 确认超时行为：hold(挂起待确认)/deliver(自动交付)/cancel(取消)。默认 'hold'。 */
+  taskConfirmTimeoutAction: 'hold' | 'deliver' | 'cancel'
+  /** 豁免交付确认的事分类（低风险任务跳过确认）。默认 []。 */
+  taskConfirmExemptMatters: string[]
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -196,4 +222,17 @@ export const Config: Schema<Config> = Schema.object({
   memberMemory: Schema.boolean().default(true),
   autoGreet: Schema.boolean().default(true),
   selfIntroTemplate: Schema.string().default('大家好，我是 {{userId}}，很高兴加入这个群。以后有什么需要帮忙的尽管找我，我会尽力配合大家的工作！'),
+
+  timelineEnabled: Schema.boolean().default(true),
+  timelineInject: Schema.boolean().default(true),
+  timelineCrossRoom: Schema.boolean().default(false),
+  timelineCap: Schema.number().default(500),
+
+  roomRoles: Schema.dict(Schema.string()).default({}),
+  taskClarifyBeforeStart: Schema.boolean().default(true),
+  taskClarifyTimeoutSecs: Schema.number().default(120),
+  taskConfirmBeforeDeliver: Schema.boolean().default(true),
+  taskConfirmTimeoutSecs: Schema.number().default(600),
+  taskConfirmTimeoutAction: Schema.union(['hold', 'deliver', 'cancel']).default('hold'),
+  taskConfirmExemptMatters: Schema.array(Schema.string()).default([]),
 })

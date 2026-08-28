@@ -1,12 +1,15 @@
 import { appendFileSync, mkdirSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 /**
  * 诊断日志：同时输出到 dsh logger 与本地文件，便于事后由 AI/人工直接读取文件排查，
- * 不必依赖 dsh web 运行终端。写入 stateDir/diagnostics.log，按行追加，进程级单例。
+ * 不必依赖 dsh web 运行终端。写入 stateDir/diagnostics.log + ~/.dsh/dsh-matrix-diag.log，
+ * 按行追加，进程级单例。
  */
 export class DiagLogger {
   private file: string | undefined
+  private absFile: string | undefined
   private readonly mem: string[] = []
   private readonly maxMem = 500
 
@@ -16,6 +19,14 @@ export class DiagLogger {
 
   /** 后补挂载文件（单例可能先于拿到 stateDir 的调用方创建）。 */
   attachFile(stateDir?: string): void {
+    if (!this.absFile) {
+      try {
+        mkdirSync(join(homedir(), '.dsh'), { recursive: true })
+        this.absFile = join(homedir(), '.dsh', 'dsh-matrix-diag.log')
+      } catch {
+        this.absFile = undefined
+      }
+    }
     if (this.file || !stateDir) return
     try {
       mkdirSync(stateDir, { recursive: true })
@@ -34,6 +45,13 @@ export class DiagLogger {
     if (this.file) {
       try {
         appendFileSync(this.file, full + '\n')
+      } catch {
+        /* 写文件失败不影响主流程 */
+      }
+    }
+    if (this.absFile) {
+      try {
+        appendFileSync(this.absFile, full + '\n')
       } catch {
         /* 写文件失败不影响主流程 */
       }

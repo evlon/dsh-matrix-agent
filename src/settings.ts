@@ -17,8 +17,27 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import { appendFileSync, mkdirSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import type { Config, SoulConfig } from './config.js'
 import type { MatrixTask } from './store.js'
+
+/** 文件诊断日志（固定绝对路径 ~/.dsh/dsh-matrix-diag.log + stateDir/.dsh-matrix/diagnostics.log）。 */
+function fileLog(stateDir: string, message: string): void {
+  const line = `${new Date().toISOString()} [dsh-matrix-agent:settings] ${message}\n`
+  const targets = [join(homedir(), '.dsh', 'dsh-matrix-diag.log')]
+  try {
+    const dir = join(stateDir, '.dsh-matrix')
+    mkdirSync(dir, { recursive: true })
+    targets.push(join(dir, 'diagnostics.log'))
+  } catch { /* 忽略 */ }
+  for (const target of targets) {
+    try {
+      appendFileSync(target, line, 'utf8')
+    } catch { /* 忽略 */ }
+  }
+}
 
 /** settings namespace 名称（单入口单 ns：灵魂 + 账号 + 社交统一存放）。 */
 export const MATRIX_NS = 'dsh-matrix'
@@ -36,6 +55,36 @@ export interface TasksSnapshot {
 /** 空任务快照。 */
 export function emptyTasksSnapshot(): TasksSnapshot {
   return { rooms: {}, sessionRooms: {}, updatedAt: 0 }
+}
+
+/** 时间线管理命令（Client→Host，Host 处理后清零，防重启重放）。 */
+export interface TimelineOps {
+  /** 非 0 即触发清空（用递增/时间戳唯一值）。 */
+  clearSeq: number
+  /** 待删除的时间线条目 id。 */
+  removeIds: string[]
+}
+
+/** 空时间线管理命令。 */
+export function emptyTimelineOps(): TimelineOps {
+  return { clearSeq: 0, removeIds: [] }
+}
+
+/** 秘书工作台操作（Client→Host，Host 处理后清零，防重启重放）。 */
+export interface SecretaryOps {
+  /** 目标任务 id。 */
+  taskId: string
+  /** 操作类型。 */
+  action: 'approve-start' | 'give-instruction' | 'confirm-deliver' | 'give-feedback' | 'approve' | 'reject' | 'set-cwd'
+  /** 指示/意见文本（give-instruction/give-feedback 必填）。 */
+  text?: string
+  /** 工作目录路径（set-cwd 必填）。 */
+  cwd?: string
+}
+
+/** 空秘书操作。 */
+export function emptySecretaryOps(): SecretaryOps | undefined {
+  return undefined
 }
 
 /** 灵魂默认配置（与 config.ts 的 soul 默认值一致，默认百变员工）。 */
@@ -101,6 +150,17 @@ export const LIVE_APPLY_KEYS = new Set([
   'memberMemory',
   'autoGreet',
   'selfIntroTemplate',
+  'timelineEnabled',
+  'timelineInject',
+  'timelineCrossRoom',
+  'timelineCap',
+  'roomRoles',
+  'taskClarifyBeforeStart',
+  'taskClarifyTimeoutSecs',
+  'taskConfirmBeforeDeliver',
+  'taskConfirmTimeoutSecs',
+  'taskConfirmTimeoutAction',
+  'taskConfirmExemptMatters',
   'soul',
 ])
 
@@ -145,6 +205,17 @@ function pickMatrixBase(config: Config): Record<string, unknown> {
     memberMemory: config.memberMemory,
     autoGreet: config.autoGreet,
     selfIntroTemplate: config.selfIntroTemplate,
+    timelineEnabled: config.timelineEnabled,
+    timelineInject: config.timelineInject,
+    timelineCrossRoom: config.timelineCrossRoom,
+    timelineCap: config.timelineCap,
+    roomRoles: config.roomRoles,
+    taskClarifyBeforeStart: config.taskClarifyBeforeStart,
+    taskClarifyTimeoutSecs: config.taskClarifyTimeoutSecs,
+    taskConfirmBeforeDeliver: config.taskConfirmBeforeDeliver,
+    taskConfirmTimeoutSecs: config.taskConfirmTimeoutSecs,
+    taskConfirmTimeoutAction: config.taskConfirmTimeoutAction,
+    taskConfirmExemptMatters: config.taskConfirmExemptMatters,
     soul: config.soul ?? DEFAULT_SOUL,
   }
 }
@@ -156,12 +227,17 @@ function pickMatrixBase(config: Config): Record<string, unknown> {
 export function registerMatrixSettings(
   ctx: Context,
   config: Config,
-): { merged: Config; dispose: () => void; getMerged: () => Config; updateTasksSnapshot: (snapshot: TasksSnapshot) => void } {
+  options?: { onTimelineOps?: (ops: TimelineOps) => void; onSecretaryOps?: (ops: SecretaryOps) => void },
+): { merged: Config; dispose: () => void; getMerged: () => Config; updateTasksSnapshot: (snapshot: TasksSnapshot) => void; updateTimelineSnapshot: (snapshot: { entries: unknown[]; updatedAt: number }) => void; clearTimelineOps: () => void; clearSecretaryOps: () => void } {
+  const onTimelineOps = options?.onTimelineOps
+  const onSecretaryOps = options?.onSecretaryOps
   let current = config
   const disposers: Array<() => void> = []
   let snapshotScope: { update(patch: object): Promise<void> } | undefined
   let snapshotTimer: NodeJS.Timeout | undefined
   let pendingSnapshot: TasksSnapshot | undefined
+  let timelineTimer: NodeJS.Timeout | undefined
+  let pendingTimeline: { entries: unknown[]; updatedAt: number } | undefined
 
   const settings = ctx.get('settings') as
     | {
@@ -173,6 +249,9 @@ export function registerMatrixSettings(
         }
       }
     | undefined
+
+  // 文件诊断：settings 服务是否可用、register 是否执行（不依赖 stdout）。
+  fileLog(config.stateDir, `registerMatrixSettings enter: settingsService=${settings !== undefined} stateDir=${config.stateDir}`)
 
   if (settings !== undefined) {
     try {
@@ -202,6 +281,17 @@ export function registerMatrixSettings(
         memberMemory: z.boolean().default(true),
         autoGreet: z.boolean().default(true),
         selfIntroTemplate: z.string().default('大家好，我是 {{userId}}，很高兴加入这个群。以后有什么需要帮忙的尽管找我，我会尽力配合大家的工作！'),
+        timelineEnabled: z.boolean().default(true),
+        timelineInject: z.boolean().default(true),
+        timelineCrossRoom: z.boolean().default(false),
+        timelineCap: z.number().default(500),
+        roomRoles: z.dict(z.string()).default({}),
+        taskClarifyBeforeStart: z.boolean().default(true),
+        taskClarifyTimeoutSecs: z.number().default(120),
+        taskConfirmBeforeDeliver: z.boolean().default(true),
+        taskConfirmTimeoutSecs: z.number().default(600),
+        taskConfirmTimeoutAction: z.union([z.const('hold'), z.const('deliver'), z.const('cancel')]).default('hold'),
+        taskConfirmExemptMatters: z.array(z.string()).default([]),
         soul: z.object({
           enabled: z.boolean().default(true),
           persona: z.string().default(''),
@@ -213,22 +303,44 @@ export function registerMatrixSettings(
         // 运行时只读镜像（非用户配置）：任务视图数据源。用 z.any 宽松校验
         // （任务形状由 Host 归一化，schema 只保证是个对象）。
         tasksSnapshot: z.any().default(emptyTasksSnapshot()),
+        // 运行时只读镜像（非用户配置）：自我时间线数据源。
+        timelineSnapshot: z.any().default({ entries: [], updatedAt: 0 }),
+        // Client→Host 管理命令（非用户配置）：Host 处理后清零，防重启重放。
+        timelineOps: z.any().default(emptyTimelineOps()),
+        // Client→Host 秘书操作命令（非用户配置）：Host 处理后清零。
+        secretaryOps: z.any().default(undefined),
       }), { applies: 'live', base: pickMatrixBase(config) })
       const applyUser = (user: unknown): void => {
         current = mergeMatrixConfig(config, (user ?? {}) as Record<string, unknown>)
+        // 检测时间线管理命令（Client→Host）。
+        const ops = (user as Record<string, unknown> | undefined)?.timelineOps as TimelineOps | undefined
+        if (ops !== undefined && onTimelineOps !== undefined) {
+          const active = ops.clearSeq !== 0 || (Array.isArray(ops.removeIds) && ops.removeIds.length > 0)
+          if (active) onTimelineOps(ops)
+        }
+        // 检测秘书操作命令（Client→Host）。
+        const sops = (user as Record<string, unknown> | undefined)?.secretaryOps as SecretaryOps | undefined
+        if (sops !== undefined && sops.taskId !== undefined && onSecretaryOps !== undefined) {
+          onSecretaryOps(sops)
+        }
       }
       applyUser(scope.get())
       snapshotScope = scope
       const unsub = scope.watch((next) => applyUser(next))
       disposers.push(unsub)
+      fileLog(config.stateDir, `settings register OK: ns=${MATRIX_NS} snapshotScope set`)
     } catch (error) {
       ctx.logger.warn('[dsh-matrix-agent] matrix settings unavailable: %s', error instanceof Error ? error.message : String(error))
+      fileLog(config.stateDir, `settings register FAILED: ${error instanceof Error ? error.message : String(error)}`)
     }
+  } else {
+    fileLog(config.stateDir, 'settings service unavailable (ctx.get("settings") === undefined); snapshots will NOT be published')
   }
 
   /** 防抖写任务快照（运行时镜像，非用户配置）。 */
   const updateTasksSnapshot = (snapshot: TasksSnapshot): void => {
-    // 归一化为 schema 兼容的纯 JSON（note/cwd/contextPrompt 可缺省）。
+    // 归一化为 schema 兼容的纯 JSON（note/cwd/contextPrompt 可缺省），
+    // 避免把含 readonly 对象/类实例的原始任务写进 settings（序列化丢失/污染）。
     const rooms: Record<string, unknown[]> = {}
     for (const [roomId, tasks] of Object.entries(snapshot.rooms)) {
       rooms[roomId] = tasks.map((t) => ({
@@ -238,35 +350,90 @@ export function registerMatrixSettings(
         text: t.text,
         status: t.status,
         createdAt: t.createdAt,
+        ...(t.role !== undefined ? { role: t.role } : {}),
         ...(t.note !== undefined ? { note: t.note } : {}),
         ...(t.cwd !== undefined ? { cwd: t.cwd } : {}),
+        ...(t.deliverTo !== undefined ? { deliverTo: t.deliverTo } : {}),
+        ...(t.result !== undefined ? { result: t.result } : {}),
+        ...(t.clarifyReply !== undefined ? { clarifyReply: t.clarifyReply } : {}),
+        ...(t.confirmReply !== undefined ? { confirmReply: t.confirmReply } : {}),
+        ...(t.ownerDmRoomId !== undefined ? { ownerDmRoomId: t.ownerDmRoomId } : {}),
         ...(t.contextPrompt !== undefined ? { contextPrompt: t.contextPrompt } : {}),
       }))
     }
-    const payload: TasksSnapshot = {
-      rooms: snapshot.rooms,
-      sessionRooms: snapshot.sessionRooms,
+    const sessionRooms: Record<string, string> = {}
+    for (const [sessionId, roomId] of Object.entries(snapshot.sessionRooms)) {
+      sessionRooms[sessionId] = roomId
+    }
+    const payload: { rooms: Record<string, unknown[]>; sessionRooms: Record<string, string>; updatedAt: number } = {
+      rooms,
+      sessionRooms,
       updatedAt: snapshot.updatedAt,
     }
-    pendingSnapshot = payload
+    pendingSnapshot = payload as TasksSnapshot
     clearTimeout(snapshotTimer)
     snapshotTimer = setTimeout(() => {
       const next = pendingSnapshot
       pendingSnapshot = undefined
-      if (next === undefined || snapshotScope === undefined) return
-      snapshotScope.update({ tasksSnapshot: next }).catch((error: unknown) => {
+      if (next === undefined || snapshotScope === undefined) {
+        console.error('[dsh-matrix-agent] tasks snapshot skipped: next=%s snapshotScope=%s', next === undefined, snapshotScope === undefined)
+        fileLog(config.stateDir, `tasks snapshot SKIPPED: next=${next !== undefined} snapshotScope=${snapshotScope !== undefined}`)
+        return
+      }
+      snapshotScope.update({ tasksSnapshot: next }).then(() => {
+        console.log('[dsh-matrix-agent] tasks snapshot published rooms=%d', Object.keys(next.rooms).length)
+        fileLog(config.stateDir, `tasks snapshot published rooms=${Object.keys(next.rooms).length}`)
+      }).catch((error: unknown) => {
+        console.error('[dsh-matrix-agent] tasks snapshot write failed: %s', error instanceof Error ? error.message : String(error))
         ctx.logger.warn('[dsh-matrix-agent] tasks snapshot write failed: %s', error instanceof Error ? error.message : String(error))
+        fileLog(config.stateDir, `tasks snapshot write FAILED: ${error instanceof Error ? error.message : String(error)}`)
       })
     }, 300)
+  }
+
+  /** 防抖写时间线快照（运行时镜像，非用户配置）。 */
+  const updateTimelineSnapshot = (snapshot: { entries: unknown[]; updatedAt: number }): void => {
+    pendingTimeline = snapshot
+    clearTimeout(timelineTimer)
+    timelineTimer = setTimeout(() => {
+      const next = pendingTimeline
+      pendingTimeline = undefined
+      if (next === undefined || snapshotScope === undefined) {
+        fileLog(config.stateDir, `timeline snapshot SKIPPED: next=${next !== undefined} snapshotScope=${snapshotScope !== undefined}`)
+        return
+      }
+      snapshotScope.update({ timelineSnapshot: next }).then(() => {
+        fileLog(config.stateDir, `timeline snapshot published entries=${next.entries.length}`)
+      }).catch((error: unknown) => {
+        ctx.logger.warn('[dsh-matrix-agent] timeline snapshot write failed: %s', error instanceof Error ? error.message : String(error))
+        fileLog(config.stateDir, `timeline snapshot write FAILED: ${error instanceof Error ? error.message : String(error)}`)
+      })
+    }, 300)
+  }
+
+  /** 清零时间线管理命令（Host 处理后调用，防重启重放）。 */
+  const clearTimelineOps = (): void => {
+    if (snapshotScope === undefined) return
+    snapshotScope.update({ timelineOps: emptyTimelineOps() }).catch(() => {})
+  }
+
+  /** 清零秘书操作命令（Host 处理后调用，防重启重放）。 */
+  const clearSecretaryOps = (): void => {
+    if (snapshotScope === undefined) return
+    snapshotScope.update({ secretaryOps: undefined }).catch(() => {})
   }
 
   return {
     merged: current,
     dispose: () => {
       clearTimeout(snapshotTimer)
+      clearTimeout(timelineTimer)
       for (const dispose of disposers.splice(0)) dispose()
     },
     getMerged: () => current,
     updateTasksSnapshot,
+    updateTimelineSnapshot,
+    clearTimelineOps,
+    clearSecretaryOps,
   }
 }

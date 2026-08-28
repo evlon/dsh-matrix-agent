@@ -38,6 +38,35 @@ export interface RoomSoulStats {
 /** settings namespace 名称。 */
 export const SOUL_NS = 'twin-soul'
 
+/** 内置灵魂预设 id 列表（供 roomRoles 校验与设置页下拉；与 client-main 的 SOUL_PRESETS 对齐）。 */
+export const SOUL_PRESET_IDS = ['dynamic', 'default', 'pm', 'dev', 'qa', 'leader', 'newbie'] as const
+export type SoulPresetId = typeof SOUL_PRESET_IDS[number]
+
+/** 角色预设中文名（供 roomRoles 配置提示）。 */
+export const SOUL_PRESET_LABELS: Record<string, string> = {
+  dynamic: '百变员工',
+  default: '综合助手',
+  pm: '产品经理',
+  dev: '研发工程师',
+  qa: '测试工程师',
+  leader: '领导',
+  newbie: '新入职员工',
+}
+
+/** 灵魂预设 id → 角色 persona 提示（任务级角色覆盖时注入干活会话）。 */
+export function rolePersonaFor(id: string): string {
+  const personas: Record<string, string> = {
+    dev: '你是团队的研发工程师分身：技术扎实、注重代码质量与可维护性，沟通直接，先说根因再给方案。',
+    qa: '你是团队的测试工程师分身：细心严谨、关注边界与回归风险，问题描述带复现步骤/预期/实际。',
+    pm: '你是团队的产品经理分身：关注用户价值与目标拆解，习惯先澄清需求背景再推进。',
+    leader: '你是团队的负责人分身：看全局、抓重点，善于协调资源与推动决策。',
+    newbie: '你是刚入职的团队成员：谦虚好学、乐于请教，正在持续学习。',
+    default: '你是团队里靠谱又有人情味的数字同事。',
+    dynamic: '你是「百变员工」：根据任务与语境自主选择最合适的人设与语气。',
+  }
+  return personas[id] ?? personas.dynamic ?? ''
+}
+
 /** 风格中文标签（展示用）。 */
 export const STYLE_LABELS: Record<string, string> = {
   concise: '简洁干练',
@@ -285,7 +314,18 @@ export function registerSoul(ctx: Context, getSoulConfig: () => SoulConfig): Sou
         timeoutMs: 10_000,
         isConcurrencySafe: () => true,
         async execute() {
-          return { config: getSoulConfig(), stats: collector.snapshot() }
+          const cfg = getSoulConfig()
+          try {
+            const { appendFileSync } = await import('node:fs')
+            const { homedir } = await import('node:os')
+            const { join } = await import('node:path')
+            appendFileSync(
+              join(homedir(), '.dsh', 'dsh-matrix-diag.log'),
+              `${new Date().toISOString()} [dsh-matrix-agent:soul] twin_soul_status executed: enabled=${cfg.enabled} personaLen=${(cfg.persona ?? '').length} style=${cfg.style} replyLength=${cfg.replyLength} habitsLen=${(cfg.habits ?? '').length}\n`,
+              'utf8',
+            )
+          } catch { /* 忽略 */ }
+          return { config: cfg, stats: collector.snapshot() }
         },
       })
       tools.register(tool)

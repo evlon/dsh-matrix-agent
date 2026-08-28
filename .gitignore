@@ -7,3 +7,5 @@ cordis.patch.yml
 .codebuddy/
 # 本包用 pnpm 管理依赖（pnpm-lock.yaml）；package-lock.json 是 npm 的冗余锁文件，不跟踪。
 package-lock.json
+
+*.tgz

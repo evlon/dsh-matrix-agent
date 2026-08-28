@@ -25,7 +25,7 @@ function toolLog(message: string, ...args: unknown[]): void {
   _logfn?.(`[dsh-matrix-agent:tools] ${message}`, ...args)
 }
 
-/** 4 个 Matrix 专属工具的名称常量 */
+/** Matrix 专属工具的名称常量 */
 export const MATRIX_TOOL_NAMES = {
   GET_ROOM_MEMBERS: 'matrix_get_room_members',
   GET_RECENT_MESSAGES: 'matrix_get_recent_messages',
@@ -36,6 +36,7 @@ export const MATRIX_TOOL_NAMES = {
   MENTION_MEMBER: 'matrix_mention_member',
   LIST_ROOMS: 'matrix_list_rooms',
   GET_MEDIA: 'matrix_get_media',
+  TIMELINE: 'twin_timeline',
 } as const
 
 export type MatrixToolName = typeof MATRIX_TOOL_NAMES[keyof typeof MATRIX_TOOL_NAMES]
@@ -57,6 +58,13 @@ export interface MatrixToolDeps {
    * 未提供时工具只返回 base64 与元信息（不落盘）。
    */
   mediaDirForSession?: (sessionId: string) => string | undefined
+  /**
+   * 自我时间线查询（twin_timeline）：返回跨房间的分身出站动作元数据。
+   * 仅结构化元数据（kind/roomId/ts/tool/target/charCount/actor），不含聊天原文。
+   */
+  queryTimeline?: (filter: { roomId?: string; kind?: string; actor?: string; limit?: number; since?: number }) => Array<{
+    id: string; ts: number; roomId: string; kind: string; actor?: string; tool?: string; target?: string; charCount?: number; sessionId?: string
+  }>
 }
 
 /** 根据显式 roomId 或当前 agent 绑定的房间，解析实际的 roomId。 */
@@ -582,6 +590,82 @@ async function writeMediaFile(mediaDir: string, filename: string, buffer: Uint8A
   return target
 }
 
+/** 自我时间线查询工具：返回跨房间的分身出站动作元数据（无聊天原文）。 */
+function makeTimelineTool(deps: MatrixToolDeps) {
+  return defineTool({
+    name: MATRIX_TOOL_NAMES.TIMELINE,
+    description: '查询自己的跨房间时间线（仅结构化元数据，不含聊天原文）：我在各群最近回复过几次、调用过什么工具、主动发过什么消息、完成过什么任务。用于回忆自己在别处做过的事，避免在不同群之间「脑裂」。想深入了解某个房间的细节，再用 matrix_get_recent_messages 查该房间。',
+    parameters: {
+      roomId: {
+        type: 'string',
+        description: 'Matrix 房间 ID，可选；不传则返回全部房间（受配置 timelineCrossRoom 门控，默认隔离时仅本会话房间可见）',
+      },
+      kind: {
+        type: 'string',
+        description: '动作类型过滤：reply(回复)/tool-call(工具)/proactive(主动消息)/self-intro(自我介绍)/approval(审批)/task(任务)',
+      },
+      actor: {
+        type: 'string',
+        description: '动作主体过滤：secretary(秘书的请示/确认/交付调度) / worker(干活会话的执行回复/工具)',
+      },
+      limit: {
+        type: 'integer',
+        description: '返回条数，默认 20，最大 100',
+      },
+      since: {
+        type: 'integer',
+        description: '仅返回该时间戳(ms)之后的条目',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        properties: {
+          entries: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                ts: { type: 'integer' },
+                roomId: { type: 'string' },
+                kind: { type: 'string' },
+                actor: { type: 'string' },
+                tool: { type: 'string' },
+                target: { type: 'string' },
+                charCount: { type: 'integer' },
+                sessionId: { type: 'string' },
+              },
+              additionalProperties: false,
+            },
+          },
+        },
+        additionalProperties: false,
+      } as const,
+      render: renderResult,
+    },
+    timeoutMs: 15_000,
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      if (deps.queryTimeline === undefined) throw new Error('时间线服务不可用')
+      const explicit = typeof args.roomId === 'string' && args.roomId.length > 0 ? args.roomId : undefined
+      const limit = typeof args.limit === 'number' ? Math.max(1, Math.min(100, Math.floor(args.limit))) : 20
+      const since = typeof args.since === 'number' && Number.isFinite(args.since) ? args.since : undefined
+      const kind = typeof args.kind === 'string' && args.kind !== '' ? args.kind : undefined
+      const actor = typeof args.actor === 'string' && (args.actor === 'secretary' || args.actor === 'worker') ? args.actor : undefined
+      const entries = deps.queryTimeline({
+        ...(explicit !== undefined ? { roomId: explicit } : {}),
+        ...(kind !== undefined ? { kind } : {}),
+        ...(actor !== undefined ? { actor } : {}),
+        limit,
+        ...(since !== undefined ? { since } : {}),
+      })
+      return { entries }
+    },
+  })
+}
+
 /** 将 Matrix 工具通过 ctx.tools.register() 注册到 ToolRuntime（全局 layer）。
  * 必须在 agent factory 的 `setup` 或 host apply 中由 plugin ctx 调用。
  * 注册后即对所有 agent 可见，模型既能看见 schema 也能直接调用执行体。
@@ -605,6 +689,7 @@ export function applyMatrixTools(ctx: Context, deps: MatrixToolDeps): void {
     makeMentionMemberTool(deps),
     makeListRoomsTool(deps),
     makeGetMediaTool(deps),
+    makeTimelineTool(deps),
   ]
 
   for (const tool of tools) {

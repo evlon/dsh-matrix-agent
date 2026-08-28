@@ -20,10 +20,14 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { appendFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { MatrixBridge } from './bridge.js'
 import type { Config as MatrixConfig, DigitalTwinAccount } from './config.js'
 import { registerSoul } from './soul.js'
 import { registerMatrixSettings } from './settings.js'
+import type { TimelineOps, SecretaryOps } from './settings.js'
 
 export * from './auth-store.js'
 export * from './bridge.js'
@@ -34,11 +38,17 @@ export * from './member-store.js'
 export * from './soul.js'
 export * from './settings.js'
 export * from './store.js'
+export * from './timeline.js'
 export * from './tools.js'
 
 export const name = 'matrix-agent'
-/** 只需要 agent 工厂 + tools 注册；LLM 适配器、会话与工具由外围 cordis.yml 组合提供。 */
-export const inject = ['agents', 'tools']
+/**
+ * 依赖：agents/tools（核心）+ settings（设置页 namespace 与快照镜像的 Host 提供者）。
+ * 声明 settings 后 Cordis 会等它就绪再 apply，registerMatrixSettings 的
+ * ctx.get('settings') 才能拿到服务（否则返回 undefined，namespace 不注册，
+ * Client 侧 settingsScope 会 status=unavailable，任务/时间线读不到）。
+ */
+export const inject = ['agents', 'tools', 'settings']
 
 export function apply(ctx: Context, config: MatrixConfig): void {
   const token = config.accessToken === '' ? process.env.DSH_MATRIX_TOKEN : config.accessToken
@@ -49,7 +59,16 @@ export function apply(ctx: Context, config: MatrixConfig): void {
     ctx.logger.warn('[dsh-matrix-agent] no allowlist configured: all inbound messages will be rejected (fail closed)')
   }
   // 设置层 merge：settings 用户层覆盖 yml config（若 settings 服务可用）。
-  const settingsHandle = registerMatrixSettings(ctx, config)
+  // onTimelineOps 经引用转发：bridge 创建后把管理命令分发到账号，再清零命令字段。
+  let bridgeRef: MatrixBridge | undefined
+  const settingsHandle = registerMatrixSettings(ctx, config, {
+    onTimelineOps: (ops: TimelineOps) => {
+      bridgeRef?.handleTimelineOps(ops)
+    },
+    onSecretaryOps: (ops: SecretaryOps) => {
+      bridgeRef?.handleSecretaryOps(ops)
+    },
+  })
   const mergedConfig: MatrixConfig = settingsHandle.getMerged()
   // 灵魂子系统（行为统计 + 工具；配置从 merged config 读取，live 更新）。
   const soulHandle = registerSoul(ctx, () => mergedConfig.soul ?? {
@@ -60,6 +79,15 @@ export function apply(ctx: Context, config: MatrixConfig): void {
     habits: '先理解当前对话的语境与对象，再选择合适的人设与语气；如果切换了人设，主动用一句话告知对方你现在以什么角色出现，并提示可以在「数字分身」设置页修改灵魂。',
     replyLength: 'normal',
   })
+  // 诊断：dump 灵魂配置（确认 twin_soul_status / system prompt 灵魂段有内容）。
+  try {
+    const soul = mergedConfig.soul
+    appendFileSync(
+      join(homedir(), '.dsh', 'dsh-matrix-diag.log'),
+      `${new Date().toISOString()} [dsh-matrix-agent:soul] enabled=${soul?.enabled} personaLen=${(soul?.persona ?? '').length} style=${soul?.style} replyLength=${soul?.replyLength} habitsLen=${(soul?.habits ?? '').length}\n`,
+      'utf8',
+    )
+  } catch { /* 忽略 */ }
   const twins: DigitalTwinAccount[] = mergedConfig.digitalTwinMode ? (mergedConfig.digitalTwins ?? []) : []
   const bridge = new MatrixBridge(ctx, {
     ...mergedConfig,
@@ -67,7 +95,11 @@ export function apply(ctx: Context, config: MatrixConfig): void {
     digitalTwins: twins,
     soulHandle,
     updateTasksSnapshot: settingsHandle.updateTasksSnapshot,
+    updateTimelineSnapshot: settingsHandle.updateTimelineSnapshot,
+    onTimelineOpsHandled: settingsHandle.clearTimelineOps,
+    onSecretaryOpsHandled: settingsHandle.clearSecretaryOps,
   })
+  bridgeRef = bridge
   ctx.effect(() => {
     void bridge.start()
     return () => {

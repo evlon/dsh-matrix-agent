@@ -11,12 +11,24 @@ export interface MatrixTask {
   readonly roomId: string
   readonly sender: string
   text: string
-  status: 'pending' | 'approved' | 'rejected' | 'done'
+  status: 'pending' | 'approved' | 'rejected' | 'done' | 'clarifying' | 'confirming'
   /** 命中白名单时记 "记忆授权"，命中黑名单时记拒绝原因；否则空。 */
   note?: string
   createdAt: number
   cwd?: string
   contextPrompt?: string
+  /** 本次任务的角色覆盖（领导拉群跨岗时指定；默认本房间角色/百变员工）。 */
+  role?: string
+  /** 老板私聊房 id（秘书请示用；老板的回复据此路由）。 */
+  ownerDmRoomId?: string
+  /** 交付目标房间（默认原房间）。 */
+  deliverTo?: string
+  /** 结果摘要（交付前确认消息展示）。 */
+  result?: string
+  /** 老板开工指示（澄清回复，注入执行上下文）。 */
+  clarifyReply?: string
+  /** 老板交付确认/修改意见（confirming 阶段的回复）。 */
+  confirmReply?: string
 }
 
 /** 人+事维度黑白名单规则。 */

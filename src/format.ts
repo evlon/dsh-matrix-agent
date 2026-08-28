@@ -278,6 +278,8 @@ const TASK_STATUS_LABEL: Record<MatrixTask['status'], string> = {
   approved: '✅ 已批准',
   rejected: '🚫 已拒绝',
   done: '🏁 已完成',
+  clarifying: '🤔 请示中',
+  confirming: '🔐 待确认',
 }
 
 /** 工作目录状态文案。 */
