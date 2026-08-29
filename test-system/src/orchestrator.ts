@@ -320,7 +320,9 @@ export class Orchestrator {
     const state = room.state
 
     const emit = (kind: TestEvent['kind'], from: string, text?: string, status?: string, round?: number): void => {
-      const event: TestEvent = { roomId, roomName: def.name, ts: Date.now(), kind, from, text, status, round }
+      // 用 state.roomId（创建后即真实 Matrix 房间 id），与 /state 的 rooms key 一致，
+      // 浏览器才能把 SSE 事件归到正确房间。
+      const event: TestEvent = { roomId: state.roomId, roomName: def.name, ts: Date.now(), kind, from, text, status, round }
       state.messageCount += text !== undefined ? 1 : 0
       state.lastEventTs = event.ts
       this.bus.emit(event)

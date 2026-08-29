@@ -42,11 +42,31 @@ body {
 .layout { flex: 1; display: flex; min-height: 0; }
 
 .rooms-panel {
-  width: 260px;
+  width: 280px;
+  min-width: 180px;
+  max-width: 55vw;
   border-right: 1px solid var(--border);
   background: var(--panel);
   padding: 12px;
   overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.layout-splitter {
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  flex-shrink: 0;
+}
+.layout-splitter:hover, .layout-splitter.dragging { background: rgba(79,140,255,.25); }
+.layout-splitter::after {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0; left: 2px;
+  width: 2px;
+  background: var(--border);
+  pointer-events: none;
 }
 .rooms-panel h2 { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
 .room-list { display: flex; flex-direction: column; gap: 6px; }

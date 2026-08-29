@@ -186,6 +186,8 @@
       setCtlMsg('ℹ ' + (event.text || ''), true)
       return
     }
+    // 忽略占位房间事件（创建前的 room-xxx 占位 id；真实房间由 /state 提供）。
+    if (String(event.roomId).startsWith('room-')) return
     const room = ensureRoom(event)
     if (event.kind === 'system' && event.status) {
       if (event.status === 'creating') room.status = 'creating'
@@ -217,6 +219,7 @@
     }
     for (const event of data.events || []) {
       if (event.roomId === 'scenario') continue
+      if (String(event.roomId).startsWith('room-')) continue
       ensureRoom(event)
     }
     if (data.rooms && data.rooms.length > 0) selectedRoomId = data.rooms[0].roomId
@@ -316,5 +319,35 @@
     } else {
       sendControl(act)
     }
+  })
+
+  // 布局分隔条：拖拽调整房间栏宽度。
+  const splitterEl = document.getElementById('layout-splitter')
+  const roomsPanelEl = document.querySelector('.rooms-panel')
+  const MIN_W = 180
+  const MAX_W = window.innerWidth * 0.55
+  let dragging = false
+
+  splitterEl.addEventListener('mousedown', (e) => {
+    e.preventDefault()
+    dragging = true
+    splitterEl.classList.add('dragging')
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  })
+
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return
+    const rect = document.querySelector('.layout').getBoundingClientRect()
+    const pct = Math.max(MIN_W, Math.min(MAX_W, e.clientX - rect.left))
+    roomsPanelEl.style.width = pct + 'px'
+  })
+
+  window.addEventListener('mouseup', () => {
+    if (!dragging) return
+    dragging = false
+    splitterEl.classList.remove('dragging')
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
   })
 })()
