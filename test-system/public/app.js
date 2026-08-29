@@ -46,10 +46,10 @@
     }).catch(() => setCtlMsg('✘ 网络错误', false))
   }
 
-  function setCtlMsg(text, ok) {
+  function setCtlMsg(text, ok, persist) {
     ctlMsgEl.textContent = text
     ctlMsgEl.className = 'ctl-msg ' + (ok ? 'ok' : 'err')
-    setTimeout(() => { ctlMsgEl.textContent = '' }, 3000)
+    if (!persist) setTimeout(() => { ctlMsgEl.textContent = '' }, 3000)
   }
 
   function renderRoomList() {
@@ -113,6 +113,21 @@
     }
     const room = rooms.get(selectedRoomId)
     controlBarEl.style.display = 'block'
+    const finished = room.status === 'done' || room.status === 'error'
+    // 房间已结束：禁用所有控制，提示重新启动。
+    const buttons = controlBarEl.querySelectorAll('button')
+    const selects = controlBarEl.querySelectorAll('select')
+    const input = document.getElementById('inj-text')
+    if (finished) {
+      for (const b of buttons) b.disabled = true
+      for (const s of selects) s.disabled = true
+      if (input) input.disabled = true
+      setCtlMsg('⚠ 房间已结束，无法干预（可重新启动测试）', false, true)
+    } else {
+      for (const b of buttons) b.disabled = false
+      for (const s of selects) s.disabled = false
+      if (input) input.disabled = false
+    }
     // 换同事下拉：房间成员里去掉数字人。
     const colleagues = (room.members || []).filter((m) => !m.startsWith('@ai-'))
     ctlColleagueEl.innerHTML = ''

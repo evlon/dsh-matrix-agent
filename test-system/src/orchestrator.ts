@@ -69,6 +69,8 @@ interface RoomControl {
   placeholderId: string
   /** 真实 Matrix 房间 id（创建后更新；control 按它匹配）。 */
   realRoomId: string | undefined
+  /** 房间是否已结束（done/error）；结束后不再接受干预。 */
+  finished: boolean
 }
 
 export class Orchestrator {
@@ -147,7 +149,17 @@ export class Orchestrator {
         break
       }
     }
-    if (found === undefined) return { ok: false, message: `房间不存在: ${cmd.roomId}` }
+    if (found === undefined) {
+      // 房间可能已结束（controls 保留但标记 finished）或从未存在。
+      const known = [...this.rooms.values()].find((r) => r.state.roomId === cmd.roomId || r.roomId === cmd.roomId)
+      if (known !== undefined && (known.state.status === 'done' || known.state.status === 'error')) {
+        return { ok: false, message: `房间已结束（${known.state.status}），无法干预；可重新启动测试` }
+      }
+      return { ok: false, message: `房间不存在: ${cmd.roomId}` }
+    }
+    if (found.control.finished) {
+      return { ok: false, message: '房间已结束，无法干预' }
+    }
     if (cmd.action === 'inject' && cmd.asTwin === true && this.twinClient === undefined) {
       return { ok: false, message: '未配置数字人账号 token（TWIN_ACCESS_TOKEN），无法以数字人身份注入' }
     }
@@ -158,7 +170,7 @@ export class Orchestrator {
   /** 启动一个测试房间：同步建句柄并立即返回，对话循环在后台推进。 */
   startRoom(def: TestRoomDef): RunningRoom {
     const roomId = `room-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-    const control: RoomControl = { queue: [], paused: false, pausedResolve: undefined, skipWait: false, nextColleagueId: undefined, placeholderId: roomId, realRoomId: undefined }
+    const control: RoomControl = { queue: [], paused: false, pausedResolve: undefined, skipWait: false, nextColleagueId: undefined, placeholderId: roomId, realRoomId: undefined, finished: false }
     this.controls.set(roomId, control)
     const state: RoomState = {
       roomId,
@@ -288,7 +300,8 @@ export class Orchestrator {
       state.status = 'error'
       emit('system', '系统', `房间失败: ${error instanceof Error ? error.message : String(error)}`, 'error')
     }
-    this.controls.delete(roomId)
+    // 房间结束：保留 controls 供查询，但标记 finished（control() 返回友好提示）。
+    control.finished = true
   }
 
   /** 消费房间干预队列；返回 true 表示应停止循环（stop）。 */

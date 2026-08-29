@@ -103,6 +103,10 @@ body {
   font-size: 12px;
   white-space: nowrap;
 }
+.ctl-btn:disabled, .ctl-select:disabled, .ctl-input:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
 .ctl-btn:hover { border-color: var(--accent); }
 .ctl-btn.danger:hover { border-color: var(--error); color: var(--error); }
 .ctl-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
