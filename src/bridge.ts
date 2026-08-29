@@ -1263,10 +1263,10 @@ export class AccountBridge {
         return
       }
 
-      // 数字分身模式：同事/主管发来的工作进 matrix 任务队列待审，不直接执行。
+      // 数字分身模式（或按房间启用的秘书编排）：同事/主管发来的工作进 matrix 任务队列待审，不直接执行。
       // 机器人自己账号发出的消息（如有）不进队列；命令已在上方处理。
       // 入队用 stripped（已剥 @提及 前缀）：任务面板与注入 agent 的文本不带原始提及标记。
-      if (this.config.digitalTwinMode && message.sender !== this.userId) {
+      if (await this.isTwinMode(message.roomId) && message.sender !== this.userId) {
         await this.enqueueTask(message.roomId, message.sender, stripped)
         return
       }
@@ -1319,6 +1319,20 @@ export class AccountBridge {
    * 仅用于让 agent 知道自己身处的会话类型（群聊/私聊）与身份，消除"把群聊当 1v1"的误判。
    * 绝不注入成员名单——大群也不会放大 token。群名/人数均走带缓存的接口。
    */
+  /** 该房间是否启用秘书编排（任务入队/请示/确认）：
+   * 全局 digitalTwinMode=true，或房间名匹配 twinModeRoomPrefix（按房间开，如测试房间）。 */
+  private async isTwinMode(roomId: string): Promise<boolean> {
+    if (this.config.digitalTwinMode) return true
+    const prefix = this.config.twinModeRoomPrefix
+    if (prefix === '') return false
+    try {
+      const name = this.channel.getRoomName ? await this.channel.getRoomName(roomId) : undefined
+      return name !== undefined && name.includes(prefix)
+    } catch {
+      return false
+    }
+  }
+
   private async roomContextLabel(roomId: string): Promise<string> {
     const isDm = this.channel.isDirectRoom ? await this.channel.isDirectRoom(roomId) : false
     const me = `@${localpartOf(this.userId)}`

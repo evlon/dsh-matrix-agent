@@ -32,7 +32,10 @@ export function buildTaskFlowScenario(colleagueUserIds: string[]): TestRoomDef[]
       asserts: [
         { id: 'reply', label: '数字人响应了任务', kind: 'twin-replied' },
         { id: 'count', label: '任务对话产生足够消息（≥4 条）', kind: 'message-count', target: 4 },
-        // 完整任务流转断言（请示/交付）依赖 digitalTwinMode，后续补充 custom 评估器。
+        // 秘书编排断言：数字人应私聊老板请示（需 twinModeRoomPrefix 匹配测试房间 + owner 指向老板账号）。
+        { id: 'twin-sent-dm', label: '数字人私聊老板请示开工（秘书编排）', kind: 'twin-sent-dm' },
+        { id: 'boss-approved', label: '老板自动批准开工', kind: 'boss-approved' },
+        { id: 'task-delivered', label: '任务完成并交付（确认或交付回群）', kind: 'task-delivered' },
       ],
     },
   ]

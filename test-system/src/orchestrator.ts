@@ -13,6 +13,7 @@
  */
 import { AiColleague, type ColleaguePersona } from './ai-colleague.js'
 import { MatrixClient, type RoomMessage } from './matrix-client.js'
+import { BossAgent } from './boss.js'
 import type { TestConfig } from './config.js'
 import { EventBus, type RoomState, type TestEvent } from './events.js'
 
@@ -37,13 +38,15 @@ export interface AssertContext {
   colleagueMessages: number
   /** 实际轮次。 */
   rounds: number
+  /** 老板收到的数字人私聊请示/确认（秘书编排测试）。 */
+  bossDm?: Array<{ kind: 'clarify' | 'confirm'; text: string; reply: string; ts: number }>
 }
 
 /** 房间断言。 */
 export interface RoomAssert {
   id: string
   label: string
-  kind: 'twin-replied' | 'twin-responded-in-time' | 'twin-mentioned-colleague' | 'message-count' | 'custom'
+  kind: 'twin-replied' | 'twin-responded-in-time' | 'twin-mentioned-colleague' | 'message-count' | 'twin-sent-dm' | 'boss-approved' | 'task-delivered' | 'custom'
   /** message-count 目标。 */
   target?: number
   /** custom 评估器。 */
@@ -107,6 +110,8 @@ export class Orchestrator {
   private readonly twin: TwinIdentity
   /** 数字人账号客户端（数字人身份注入用；未配 token 时 undefined）。 */
   private twinClient: MatrixClient | undefined
+  /** 老板代理（模拟老板，自动批准/确认；需 BOSS_TOKEN）。 */
+  private boss: BossAgent | undefined
   private readonly rooms = new Map<string, RunningRoom>()
   private readonly controls = new Map<string, RoomControl>()
   private readonly stopFlags = new Set<string>()
@@ -143,6 +148,19 @@ export class Orchestrator {
         account: { userId: this.twin.userId, displayName: this.twin.displayName, accessToken: this.config.twinAccessToken },
         fetchFn: this.fetchFn,
       })
+    }
+    // 老板代理（模拟老板自动批准/确认；需 BOSS_TOKEN）。
+    if (this.config.bossUserId !== undefined && this.config.bossAccessToken !== undefined && this.config.bossAccessToken !== '') {
+      this.boss = new BossAgent({
+        homeserver: this.config.homeserver,
+        bossUserId: this.config.bossUserId,
+        bossAccessToken: this.config.bossAccessToken,
+        fetchFn: this.fetchFn,
+      })
+      this.boss.start()
+      console.log(`[test] 老板代理已启动: ${this.config.bossUserId}（自动批准/确认请示）`)
+    } else {
+      console.log('[test] 未配置 BOSS_TOKEN：秘书编排的请示/确认不会被自动批准（task-flow 断言会失败）')
     }
   }
 
@@ -453,6 +471,7 @@ export class Orchestrator {
       twinMessages: 0,
       colleagueMessages: 0,
       rounds: round,
+      bossDm: this.boss?.dmEvents.map((e) => ({ kind: e.kind, text: e.text, reply: e.reply, ts: e.ts })) ?? [],
     }
     // 统计数字人/同事消息（从事件流）。
     for (const e of ctx.events) {
@@ -482,6 +501,18 @@ export class Orchestrator {
           case 'message-count':
             passed = ctx.colleagueMessages + ctx.twinMessages >= (assert.target ?? 1)
             detail = `消息总数 ${ctx.colleagueMessages + ctx.twinMessages}（目标 ≥${assert.target ?? 1}）`
+            break
+          case 'twin-sent-dm':
+            passed = (ctx.bossDm ?? []).some((d) => d.kind === 'clarify')
+            detail = passed ? '数字人私聊了老板请示（秘书编排生效）' : '数字人未私聊老板请示（检查 digitalTwinMode/twinModeRoomPrefix/owner）'
+            break
+          case 'boss-approved':
+            passed = (ctx.bossDm ?? []).some((d) => d.kind === 'clarify' && d.reply !== '')
+            detail = passed ? '老板已自动批准开工' : '老板未批准（未收到请示或回复失败）'
+            break
+          case 'task-delivered':
+            passed = (ctx.bossDm ?? []).some((d) => d.kind === 'confirm') || ctx.twinMessages >= 3
+            detail = passed ? '数字人完成交付（老板收到确认或群内多次回复）' : '数字人未交付'
             break
           case 'custom':
             if (assert.evaluate !== undefined) passed = await assert.evaluate(ctx)

@@ -149,6 +149,9 @@ export interface Config {
   /** 房间名前缀匹配即视为测试房间（如「【测试】」）。匹配时给数字人注入测试声明：
    * 「当前是测试环境，请勿真实执行任务/修改文件/向真实用户发送消息」。默认「【测试】」，空=关闭。 */
   testRoomPrefix: string
+  /** 房间名前缀匹配即启用秘书编排（任务入队/开工请示/交付确认），即使 digitalTwinMode=false。
+   * 用于「只给测试房间开秘书编排」（测试房间名带此前缀）。默认 ''，空=不启用。 */
+  twinModeRoomPrefix: string
 
   // ========== 秘书编排（角色化会话 + 开工请示 + 交付确认） ==========
   /** 房间 → 灵魂预设 id 的固定角色映射（如 { '!room:hs': 'dev' }）。默认空（百变员工）。 */
@@ -234,6 +237,7 @@ export const Config: Schema<Config> = Schema.object({
   timelineCap: Schema.number().default(500),
 
   testRoomPrefix: Schema.string().default('【测试】'),
+  twinModeRoomPrefix: Schema.string().default(''),
 
   roomRoles: Schema.dict(Schema.string()).default({}),
   taskClarifyBeforeStart: Schema.boolean().default(true),

@@ -17,6 +17,10 @@ export interface TestConfig {
   twinUserId: string
   /** 数字人账号 access token（数字人身份注入用；缺省禁用该功能）。 */
   twinAccessToken?: string
+  /** 老板账号（模拟老板，自动批准/确认秘书编排的请示）。 */
+  bossUserId?: string
+  /** 老板账号 access token。 */
+  bossAccessToken?: string
   colleagues: ColleagueAccount[]
   llm: { baseUrl: string; apiKey: string; model: string }
   web: { host: string; port: number }
@@ -75,6 +79,8 @@ export function loadConfig(): TestConfig {
     homeserver: required('HOMESERVER').replace(/\/+$/, ''),
     twinUserId: required('TWIN_USER_ID'),
     twinAccessToken: env['TWIN_ACCESS_TOKEN'] ?? undefined,
+    bossUserId: env['BOSS_USER_ID'] ?? undefined,
+    bossAccessToken: env['BOSS_TOKEN'] ?? undefined,
     colleagues: parseColleagues(required('COLLEAGUE_TOKENS')),
     llm: {
       baseUrl: required('LLM_BASE_URL').replace(/\/+$/, ''),
