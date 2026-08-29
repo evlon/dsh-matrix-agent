@@ -1,9 +1,10 @@
-# 发布 dsh-matrix-agent 到公共 npm registry：推送版本 tag 时触发（也可手动）。
+# 发布 dsh-matrix-agent 到公共 npm registry + 创建 GitHub Release：推送版本 tag 时触发（也可手动）。
 #
 # 流程：
 #   1. `npm version <patch|minor|major>`  提升 package.json 版本并打 tag
 #   2. `git push --tags`                  触发本 workflow
 #   3. job 安装依赖、构建、测试、执行 `npm publish`
+#   4. npm publish 成功后，用 commit 信息生成 changelog，创建 GitHub Release（tag 名即版本号）
 #
 # 需要名为 `NPM_TOKEN` 的仓库 secret：
 #   npm token create                     （生成 automation token）
@@ -21,7 +22,7 @@ jobs:
     name: Build, test and publish
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write # 创建 GitHub Release（含更新 release 资产）
       id-token: write # npm provenance / attestation
     steps:
       - name: Checkout
@@ -52,3 +53,49 @@ jobs:
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Generate changelog
+        id: changelog
+        shell: bash
+        run: |
+          # 最近一条 commit message 作为 release 标题（提交规范：feat:/fix:/chore: 开头）
+          COMMIT_MSG=$(git log -1 --pretty=%s "$GITHUB_SHA")
+          {
+            echo "title=$COMMIT_MSG"
+            echo "body_path=release-body.md"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## 变更"
+            echo ""
+            PREV_TAG=$(git describe --tags --abbrev=0 "$GITHUB_SHA^" 2>/dev/null || echo "")
+            if [ -n "$PREV_TAG" ]; then
+              RANGE="$PREV_TAG..$GITHUB_SHA"
+              echo "**提交范围**：\`$RANGE\`"
+            else
+              RANGE="$GITHUB_SHA"
+            fi
+            echo ""
+            echo "### 🚀 新功能"
+            COMMITS=$(git log --no-merges --pretty=format:'- %s' "$RANGE")
+            FEATS=$(printf '%s\n' "$COMMITS" | grep -E '^\- (feat|feature|add|新增)' || true)
+            if [ -z "$FEATS" ]; then echo "（无）"; else printf '%s\n' "$FEATS"; fi
+            echo ""
+            echo "### 🐛 修复"
+            FIXES=$(printf '%s\n' "$COMMITS" | grep -E '^\- (fix|修复)' || true)
+            if [ -z "$FIXES" ]; then echo "（无）"; else printf '%s\n' "$FIXES"; fi
+            echo ""
+            echo "### 📝 其他"
+            OTHERS=$(printf '%s\n' "$COMMITS" | grep -Ev '^\- (feat|feature|add|新增|fix|修复)' || true)
+            if [ -z "$OTHERS" ]; then echo "（无）"; else printf '%s\n' "$OTHERS"; fi
+            echo ""
+            echo "---"
+            echo "npm: \`npm view dsh-matrix-agent\`"
+          } > release-body.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }} ${{ steps.changelog.outputs.title }}
+          body_path: ${{ steps.changelog.outputs.body_path }}
+          generate_release_notes: false
