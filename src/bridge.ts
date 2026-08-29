@@ -1331,8 +1331,14 @@ export class AccountBridge {
     const count = this.channel.getRoomMemberCount ? await this.channel.getRoomMemberCount(roomId) : undefined
     const head = roomName !== undefined ? `群聊「${roomName}」` : '群聊'
     const size = count !== undefined ? `，约${count}人` : ''
-    const label = `[${head}${size}，你是${me}]`
-    this.diag.log(`roomContextLabel room=${roomId} isDm=${isDm} name=${roomName ?? '(none)'} count=${count ?? '(unknown)'} label=${label}`)
+    // 测试环境声明：房间名匹配 testRoomPrefix 时提示数字人（避免真实执行任务/改文件/发真实消息）。
+    let testNote = ''
+    const prefix = this.config.testRoomPrefix
+    if (prefix !== '' && roomName !== undefined && roomName.includes(prefix)) {
+      testNote = ' ⚠️测试环境：请勿真实执行任务、修改文件、或向真实用户发送重要消息，仅配合测试对话。'
+    }
+    const label = `[${head}${size}，你是${me}]${testNote}`
+    this.diag.log(`roomContextLabel room=${roomId} isDm=${isDm} name=${roomName ?? '(none)'} count=${count ?? '(unknown)'} testRoom=${testNote !== ''} label=${label}`)
     return label
   }
 

@@ -295,9 +295,11 @@ export class Orchestrator {
     const roomId = `room-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
     const control: RoomControl = { queue: [], paused: false, pausedResolve: undefined, skipWait: false, nextColleagueId: undefined, placeholderId: roomId, realRoomId: undefined, finished: false }
     this.controls.set(roomId, control)
+    // 显示名带测试前缀（createRoom 用同名）。
+    const displayName = this.config.roomPrefix + def.name
     const state: RoomState = {
       roomId,
-      roomName: def.name,
+      roomName: displayName,
       members: [...def.colleagues.map((c) => c.userId), this.twin.userId],
       status: 'creating',
       paused: false,
@@ -322,7 +324,7 @@ export class Orchestrator {
     const emit = (kind: TestEvent['kind'], from: string, text?: string, status?: string, round?: number): void => {
       // 用 state.roomId（创建后即真实 Matrix 房间 id），与 /state 的 rooms key 一致，
       // 浏览器才能把 SSE 事件归到正确房间。
-      const event: TestEvent = { roomId: state.roomId, roomName: def.name, ts: Date.now(), kind, from, text, status, round }
+      const event: TestEvent = { roomId: state.roomId, roomName: state.roomName, ts: Date.now(), kind, from, text, status, round }
       state.messageCount += text !== undefined ? 1 : 0
       state.lastEventTs = event.ts
       this.bus.emit(event)
@@ -331,8 +333,11 @@ export class Orchestrator {
     try {
       // 1. 用第一个同事建群 + invite 数字人和其他同事。
       const hostClient = this.clients[0]
-      emit('system', '系统', `创建房间「${def.name}」并邀请成员…`, 'creating')
-      const realRoomId = await hostClient.createRoom(def.name, [
+      // 房间名加测试前缀（默认「【测试】」，与 dsh-matrix-agent 的 testRoomPrefix 对齐，
+      // 数字人看到房间名即知是测试环境，避免真实执行）。
+      const roomName = this.config.roomPrefix + def.name
+      emit('system', '系统', `创建房间「${roomName}」并邀请成员…`, 'creating')
+      const realRoomId = await hostClient.createRoom(roomName, [
         this.twin.userId,
         ...def.colleagues.slice(1).map((c) => c.userId),
       ])

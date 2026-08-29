@@ -145,6 +145,11 @@ export interface Config {
   /** 时间线内存保留条数上限。默认 500。 */
   timelineCap: number
 
+  // ========== 测试环境识别 ==========
+  /** 房间名前缀匹配即视为测试房间（如「【测试】」）。匹配时给数字人注入测试声明：
+   * 「当前是测试环境，请勿真实执行任务/修改文件/向真实用户发送消息」。默认「【测试】」，空=关闭。 */
+  testRoomPrefix: string
+
   // ========== 秘书编排（角色化会话 + 开工请示 + 交付确认） ==========
   /** 房间 → 灵魂预设 id 的固定角色映射（如 { '!room:hs': 'dev' }）。默认空（百变员工）。 */
   roomRoles: Record<string, string>
@@ -227,6 +232,8 @@ export const Config: Schema<Config> = Schema.object({
   timelineInject: Schema.boolean().default(true),
   timelineCrossRoom: Schema.boolean().default(false),
   timelineCap: Schema.number().default(500),
+
+  testRoomPrefix: Schema.string().default('【测试】'),
 
   roomRoles: Schema.dict(Schema.string()).default({}),
   taskClarifyBeforeStart: Schema.boolean().default(true),
