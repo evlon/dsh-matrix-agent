@@ -7,18 +7,22 @@ DeepSeek Harness（dsh）的 Matrix agent 桥接插件：把 Matrix 房间桥接
 ```
 src/
 ├── index.ts      # 插件入口（name/inject/apply/Config），无 default export
-├── bridge.ts     # 桥接层：多账号编排（AccountBridge）、入站路由（@提及/私聊）、审批、授权、媒体注入、社交记忆、任务快照/时间线发布
+├── bridge.ts     # 桥接层：多账号编排（AccountBridge）、入站路由（@提及/私聊）、审批、授权、媒体注入、社交记忆、任务快照/时间线发布、秘书编排（开工请示/交付确认）
 ├── matrix.ts     # 通道层：零依赖 Matrix client-server API 客户端（fetch + /sync 长轮询、媒体下载）
+├── chatlog.ts    # 房间聊天记录（每房近一周/上限 2000 条，stateDir/chatlog/*.jsonl，编辑去重替换，回复引用上下文）
 ├── tools.ts      # 10 个工具（成员/消息/房间/用户/媒体/时间线查询、主动发送），经 ctx.tools.register 注册
-├── config.ts     # Schemastery 配置 schema（含 digitalTwins、灵魂 soul、社交记忆、时间线、媒体/工具开关）
+├── config.ts     # Schemastery 配置 schema（含 digitalTwins、灵魂 soul、社交记忆、时间线、测试环境识别/秘书编排开关）
 ├── soul.ts       # 数字分身灵魂：灵魂 prompt 渲染、行为统计、twin_soul_status 工具、owner 推导纯函数
 ├── settings.ts   # dsh-matrix 统一 settings namespace（账号/灵魂/社交 + 任务/时间线快照镜像、live watch）
 ├── timeline.ts   # 自我时间线：跨房间记录分身出站动作（仅元数据，不落盘原文）
+├── diag.ts       # 诊断日志：双写 stateDir/diagnostics.log + ~/.dsh/dsh-matrix-diag.log
 ├── member-store.ts # 成员记忆库（记住每个房间见过的成员，含其他数字人）
 ├── store.ts      # 文件落盘状态：房间↔会话映射、事件去重环、sync token
 ├── auth-store.ts # 记忆授权库：分身↔Owner、工具授权、红线判定
-├── client-main.js # 浏览器端源码（esbuild 打包为 __ModuleLoader__ bundle）：设置页（单入口+标签页，含时间线 tab）、会话任务 tab、所有任务面板
+├── client-main.js # 浏览器端源码（esbuild 打包为 __ModuleLoader__ bundle）：设置页（单入口+标签页，含时间线 tab）、会话任务 tab、秘书工作台面板
 └── format.ts     # 保守 markdown 子集 → Matrix HTML，收敛前缀长回复分段，媒体占位描述
+
+test-system/     # 独立测试系统（真实 homeserver + AI 同事 + 断言引擎 + Web 实时界面，见下「测试系统」）
 ```
 
 ## 架构
@@ -101,7 +105,7 @@ src/
 - **Matrix → DSH**：白名单用户文本经合并窗口（`..` 继续 / `!!` 立即提交 / 裸文本进合并窗口）后，通过 `agent.followup` 注入对应房间的 agent 会话；`/bind <session-id>` 可切换到已有会话
 - **媒体处理（图片/文件/音视频/位置）**：入站非文本消息自动下载（`mxc://` → `/media/v3/download`），保存到房间工作区 `.dsh-matrix/media`（或 `stateDir/media`）并附上本地路径；**图片额外持久化为多模态 `image` 内容块**，让模型直接看见——即使模型不支持视觉，harness 也会优雅降级为文本占位而非报错（避免旧版 `read_image` 工具不存在导致的 `unknown tool` 失败）；位置消息带坐标
 - **信息完整（类人处理）**：`preserveRichText`（默认开）时入站消息信息不丢失——**图文混排**保留文字说明（caption，修复旧版丢 caption bug）、**富文本**（`formatted_body` 的链接/加粗/代码块/列表）注入结构注记、**回复引用**（`m.in_reply_to`）注入被回复原消息上下文、**编辑**（`m.replace`）标记为最新版并在聊天记录里去重替换；设为 `false` 回退纯文本旧行为
-- **9 个 Matrix 工具**（经 `ctx.tools.register` 注册，模型可见且可直接执行）：`matrix_get_room_members` / `matrix_get_recent_messages` / `matrix_get_room_info` / `matrix_get_user_info` / `matrix_send_room_message` / `matrix_send_dm` / `matrix_mention_member` / `matrix_list_rooms` / `matrix_get_media`（详情见下方「Matrix 工具」）
+- **10 个 Matrix 工具**（经 `ctx.tools.register` 注册，模型可见且可直接执行）：`matrix_get_room_members` / `matrix_get_recent_messages` / `matrix_get_room_info` / `matrix_get_user_info` / `matrix_send_room_message` / `matrix_send_dm` / `matrix_mention_member` / `matrix_list_rooms` / `matrix_get_media` / `twin_timeline`（详情见下方「Matrix 工具」）
 - **主动消息**：agent 可主动私聊、向房间发消息、@成员（`matrix_send_dm`/`send_room_message`/`mention_member`）；首用经 Owner 审批记忆授权（`proactiveSendRequiresApproval`），或配置关闭直接允许
 - **房间事件**：入群/离群/邀请/改名换头像/房间名/主题变化经 `onRoomEvent` 投影，`notifyRoomEvents` 开启后注入 agent 会话（供主动打招呼等）
 - **DSH → Matrix**：监听 `session/event`，把 `assistant/message` 的可见文本分段（前缀 `（i/n）` 参与长度收敛）后以 `org.matrix.custom.html` 发回；`turn/start` 显示 typing
@@ -113,7 +117,7 @@ src/
 - **命令**：`/help` `/status` `/new` `/clear` `/bind <session-id>` `/auth list` `/auth revoke <tool>` `/auth revoke-all` `/memory` `/forget <userId>`
 - **数字分身灵魂**：`soul.*` 配置（性格/风格/口头禅/习惯）经 `agentSetup` 注入每个 room agent 的 system prompt（section `twin:soul`，仅 Matrix 会话生效，不污染 GUI）；行为统计（回复数/工具调用/活跃时间）按 `matrix-` 前缀 session 聚合，分身可调用 `twin_soul_status` 工具读取自身人设与统计
 - **社交记忆**：分身被邀请入群后按 `selfIntroTemplate` 主动 @ 成员自我介绍（上限 `maxSelfIntroMentions`）；`memberMemory` 开启时记住每个房间里见过的成员（含其他数字人），`/memory` 查看、`/forget <userId>` 忘记；`autoGreet` 开启时新成员入群会提示 agent 主动打招呼了解对方
-- **DSH Web 设置界面（单入口 + 标签页）**：Client 半注册一个「数字分身」设置页（`settings.section` `dsh-matrix`），内部三个标签页——**灵魂**（预设/性格/风格/口头禅/习惯 + 行为模式）、**Matrix 账号**（连接/模型路由/白名单）、**社交**（自我介绍/成员记忆/打招呼）。配置统一持久化到 `dsh-matrix` settings namespace（连接类字段需重启生效）。可选项尽量用下拉：`provider`/`model` 来自 dsh 运行时目录（`llm.providers`/`llm.models`），`agentPreset` 来自 `agentPresets.list`；**Owner 提供默认值提示**——分身账号为 `@ai-xxxxxx` 时提示默认主人 `@xxxxxx`（仅配置页辅助，运行期不推导，显式配置优先）
+- **DSH Web 设置界面（单入口 + 标签页）**：Client 半注册一个「数字分身」设置页（`settings.section` `dsh-matrix`），内部四个标签页——**灵魂**（预设/性格/风格/口头禅/习惯 + 行为模式）、**Matrix 账号**（连接/模型路由/白名单）、**社交**（自我介绍/成员记忆/打招呼/测试房间前缀）、**时间线**（自我记忆查看/筛选/删除/清空）。配置统一持久化到 `dsh-matrix` settings namespace（连接类字段需重启生效）。可选项尽量用下拉：`provider`/`model` 来自 dsh 运行时目录（`llm.providers`/`llm.models`），`agentPreset` 来自 `agentPresets.list`；**Owner 提供默认值提示**——分身账号为 `@ai-xxxxxx` 时提示默认主人 `@xxxxxx`（仅配置页辅助，运行期不推导，显式配置优先）
 - **任务视图（会话「任务」tab + 全局「所有任务」）**：点击 Matrix 会话后，在「对话 / 轨迹 / 树状视图」后新增「任务」tab，展示该房间任务列表与状态（待审/已批/执行中/完成/拒绝），支持「批准/拒绝」按钮（复用 `/approve N` `/reject N` 命令语义）；会话头部「所有任务」按钮弹出全局面板，聚合**所有会话**的任务、按状态筛选、点击跳转对应会话。数据源为 Host 把各房间任务队列写入 `dsh-matrix` settings 的 **`tasksSnapshot` 运行时镜像**（非用户配置；任务变更防抖 300ms 更新）
 - **自我时间线（跨房间记忆，防脑裂）**：记录分身自己的出站动作——回复、工具调用、主动消息、自我介绍、审批、任务推送——到 `twin-timeline.jsonl`（**仅结构化元数据：kind/roomId/时间/工具名/长度/主体，不落盘任何聊天原文**，守住「聊天内容不落盘」红线）。**按主体分层**：`actor: secretary`（秘书的请示/确认/交付调度）vs `worker`（干活会话的执行回复/工具），`twin_timeline` 工具与时间线 UI 均可按主体筛选。**逐级暴露**：① 常驻 system prompt 段 `twin:memory`（恒定提示词，字节永不变化，不影响 KV 缓存命中率，仅告知"你有自我记忆可查"）；② 分身用 `twin_timeline` 工具查行动摘要；③ 细节用 `matrix_get_recent_messages` 现查对应房间。设置页「数字分身 → 时间线」tab 可查看/筛选（类型/主体/房间）/**删除单条/清空全部**（经 settings `timelineOps` 命令字段，Host 处理后清零）。配置：`timelineEnabled`（记录开关）、`timelineInject`（常驻提示词段开关）、`timelineCrossRoom`（跨房间共享门控，默认隔离）、`timelineCap`（内存上限）
 - **秘书编排（角色化会话 + 开工请示 + 交付确认）**：每个干活会话 = 一个角色化分身（`roomRoles` 房间→角色映射，如 `{ '!room:hs': 'dev' }`；未配置用百变员工；领导拉群跨岗时任务级 `role` 覆盖）。任务流转对齐真实工作场景：**开工前**私下 DM 老板（`matrix_send_dm`）请示要求/优先级（`taskClarifyBeforeStart`，超时按原任务开工）→ 执行（角色 persona + 老板开工指示注入干活会话）→ **交付前**私下 DM 老板结果摘要请求确认（`taskConfirmBeforeDeliver`，老板回「交付」则交付回原房间、回意见则修订、超时按 `taskConfirmTimeoutAction` hold/deliver/cancel）→ 对外交付。**多轮确认**：老板可多次给指示/意见（任务保持 clarifying/confirming，直到「批准开工」/「确认交付」才流转）。老板在私聊房的回复经 `ownerDmRoomId` 路由到对应任务（不污染任务队列）。任务状态含 `clarifying`(🤔请示中)/`confirming`(🔐待确认)。配置：`roomRoles`、`taskClarifyBeforeStart`、`taskClarifyTimeoutSecs`、`taskConfirmBeforeDeliver`、`taskConfirmTimeoutSecs`、`taskConfirmTimeoutAction`、`taskConfirmExemptMatters`
@@ -191,7 +195,7 @@ allowBuilds:
 | `redlineTools` | `['bash','pwsh','write','edit']` | 红线工具：即使有记忆授权也每次强制房间确认 |
 | `cwdCandidates` | `[进程 cwd]` | 新房间工作目录引导的候选目录列表；首项作为缺省 |
 | `taskQueueMax` | `20` | 单个房间 matrix 任务队列上限，超出后最早 pending 任务自动拒绝 |
-| `matrixTools` | `true` | 是否注册 9 个 Matrix 工具（成员/消息/房间/用户查询、主动发送、媒体下载） |
+| `matrixTools` | `true` | 是否注册 10 个 Matrix 工具（成员/消息/房间/用户查询、主动发送、媒体下载、自我时间线） |
 | `notifyRoomEvents` | `false` | 是否把入群/离群/资料变更等房间事件注入 agent 会话（供主动打招呼等） |
 | `proactiveSendRequiresApproval` | `true` | 主动消息工具（`matrix_send_dm`/`send_room_message`/`mention_member`）首用是否需 Owner 批准 |
 | `preserveRichText` | `true` | 是否保留富文本（`formatted_body`）/回复上下文/编辑语义，结构化注入 agent（类人信息完整）；`false` 回退纯文本 |
@@ -201,12 +205,22 @@ allowBuilds:
 | `soul.catchphrase` | `'交给我吧'` | 口头禅（可选） |
 | `soul.habits` | `'先确认需求再动手…'` | 工作习惯（自由文本） |
 | `soul.replyLength` | `'short'` | 回复长度偏好：`short`/`normal`/`detailed` |
+| `testRoomPrefix` | `'【测试】'` | 房间名前缀匹配即视为测试房间，给数字人注入测试声明（「当前是测试环境，请勿真实执行任务/修改文件/向真实用户发送消息」）；空=关闭 |
+| `twinModeRoomPrefix` | `''` | 房间名前缀匹配即启用秘书编排（任务入队/开工请示/交付确认），即使 `digitalTwinMode=false`；用于「只给测试房间开秘书编排」；空=不启用 |
+| `roomRoles` | `{}` | 房间 → 灵魂预设 id 的固定角色映射（如 `{ '!room:hs': 'dev' }`）；未配置用百变员工 |
+| `taskClarifyBeforeStart` | `true` | 开工前是否私下 DM 老板请示要求/优先级；超时按原任务开工 |
+| `taskClarifyTimeoutSecs` | `120` | 开工请示等待秒数 |
+| `taskConfirmBeforeDeliver` | `true` | 交付前是否私下 DM 老板结果摘要请求确认 |
+| `taskConfirmTimeoutSecs` | `600` | 交付确认等待秒数 |
+| `taskConfirmTimeoutAction` | `'hold'` | 确认超时行为：`hold`（挂起待确认）/`deliver`（自动交付）/`cancel`（取消） |
+| `taskConfirmExemptMatters` | `[]` | 豁免交付确认的事分类（低风险任务跳过确认） |
 
 **内置灵魂预设**（设置页「选择预设」一键填充，可再微调后保存）：
 
 | 预设 | 适用 |
 |---|---|
-| `default` 默认（综合助手） | 通用助手，靠谱有人情味 |
+| `dynamic` 百变员工（默认） | 根据房间氛围/语境自动切换人设与语气 |
+| `default` 综合助手 | 通用助手，靠谱有人情味 |
 | `pm` 产品经理 | 关注用户价值与目标拆解，习惯先对齐需求 |
 | `dev` 研发工程师 | 技术扎实、沟通直接，先说根因再给方案 |
 | `qa` 测试工程师 | 细心严谨，问题描述带复现步骤/预期/实际 |
@@ -280,6 +294,24 @@ corepack pnpm build       # tsc（lib/ 产物）+ esbuild 打包 src/client-main
 > 由 factory(require) 注入，避免与 shell 的 React 实例冲突）；其余代码内联自包含。
 > 构建后自动 `node --check` 语法自检。改 client 半时改 `src/client-main.js`，不要改
 > `lib/client.js`。
+
+## 测试系统（test-system）
+
+独立于插件仓库根项目的 Node 测试项目（`test-system/`）：连**真实 Matrix homeserver**，
+模拟多个群 + 多个 **AI 同事**（LLM 扮演），对运行中的数字人发起真实对话，实时网页查看过程、
+断言评估、出测试报告——支撑「设计 → 开发 → 测试 → 改进」闭环。
+
+- **多群 + AI 同事**：同时跑多个测试房间（群），每房间独立对话循环；OpenAI 兼容 LLM 扮演同事
+  （角色 persona + 房间上下文 + 测试目标），动态发言、追问细节
+- **实时网页**：SSE 推送房间列表 + 对话流（同事↔数字人气泡）+ 状态徽标（进行中/完成/失败）
+- **干预控制**：每房间暂停/继续/跳过等待/停止/换同事/注入消息，全局全部暂停/继续/停止
+- **场景生命周期**：Web 顶部场景下拉 + 开始/重新开始/停止（stop 清空、重跑 run 计数 +1）、单房间重跑
+- **断言引擎**：场景房间定义断言（`twin-replied`/`twin-responded-in-time`/`twin-mentioned-colleague`/
+  `message-count`/`twin-sent-dm`/`boss-approved`/`task-delivered`/`custom`），房间跑完自动评估，
+  房间卡显示 ✔/✘ 徽标、对话流逐条显示、聚合场景报告——失败的断言即改进清单，改完插件点「重新开始」重测
+- **秘书流程场景**：`task-flow` 场景 + `BossAgent`（模拟老板：监听数字人私聊，「任务请示」→批准、
+  「交付确认」→确认交付）——数字人侧把 `twinModeRoomPrefix` 设为测试房间前缀即可在测试房间开秘书编排
+  （见 `test-system/README.md` 完整说明）
 
 ## 已知限制与路线图
 
