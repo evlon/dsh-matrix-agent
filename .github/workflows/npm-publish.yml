@@ -15,7 +15,13 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（如 v0.2.0）。留空则仅测试不发布；填版本号时若 npm 已存在该版本则跳过 publish，仅补建 GitHub Release。'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   publish:
@@ -27,6 +33,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # 需要 tag 历史生成 changelog
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -49,17 +57,44 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          # tag 触发：用 tag 名（v*）；手动触发：用输入 version
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "tag=${{ github.ref_name }}"
+            echo "publish=true"
+          else
+            VER="${{ inputs.version }}"
+            if [ -z "$VER" ]; then
+              echo "tag="
+              echo "publish=false"
+            else
+              echo "tag=$VER"
+              # npm 已有该版本则跳过 publish（幂等），仅补建 Release
+              if npm view "dsh-matrix-agent@${VER#v}" version >/dev/null 2>&1; then
+                echo "publish=false"
+              else
+                echo "publish=true"
+              fi
+            fi
+          fi
+
       - name: Publish to npm
+        if: steps.version.outputs.publish == 'true'
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Generate changelog
+        if: steps.version.outputs.tag != ''
         id: changelog
         shell: bash
         run: |
+          TAG="${{ steps.version.outputs.tag }}"
           # 最近一条 commit message 作为 release 标题（提交规范：feat:/fix:/chore: 开头）
-          COMMIT_MSG=$(git log -1 --pretty=%s "$GITHUB_SHA")
+          COMMIT_MSG=$(git log -1 --pretty=%s "$TAG")
           {
             echo "title=$COMMIT_MSG"
             echo "body_path=release-body.md"
@@ -67,12 +102,12 @@ jobs:
           {
             echo "## 变更"
             echo ""
-            PREV_TAG=$(git describe --tags --abbrev=0 "$GITHUB_SHA^" 2>/dev/null || echo "")
+            PREV_TAG=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || echo "")
             if [ -n "$PREV_TAG" ]; then
-              RANGE="$PREV_TAG..$GITHUB_SHA"
+              RANGE="$PREV_TAG..$TAG"
               echo "**提交范围**：\`$RANGE\`"
             else
-              RANGE="$GITHUB_SHA"
+              RANGE="$TAG"
             fi
             echo ""
             echo "### 🚀 新功能"
@@ -93,9 +128,10 @@ jobs:
           } > release-body.md
 
       - name: Create GitHub Release
+        if: steps.version.outputs.tag != ''
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }} ${{ steps.changelog.outputs.title }}
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }} ${{ steps.changelog.outputs.title }}
           body_path: ${{ steps.changelog.outputs.body_path }}
           generate_release_notes: false
