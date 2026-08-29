@@ -3,7 +3,7 @@
  * 供 Web UI（SSE）实时推送 + 内存日志。
  */
 
-export type EventKind = 'colleague' | 'twin' | 'system' | 'assert'
+export type EventKind = 'colleague' | 'twin' | 'system' | 'assert' | 'assert-result'
 
 export interface TestEvent {
   roomId: string
@@ -32,6 +32,10 @@ export interface RoomState {
   round: number
   messageCount: number
   lastEventTs: number
+  /** 断言结果（房间 done 后填充）。 */
+  asserts?: Array<{ id: string; label: string; passed: boolean; detail?: string }>
+  /** 是否全部断言通过（done 后）。 */
+  passed?: boolean
 }
 
 /** 简单事件总线：orchestrator 写，Web server 订阅。 */

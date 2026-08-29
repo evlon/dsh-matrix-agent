@@ -35,6 +35,10 @@ export function buildBasicChatScenario(colleagueUserIds: string[]): TestRoomDef[
         { ...byRole('li', 1), goal: goal1 },
       ],
       goal: goal1,
+      asserts: [
+        { id: 'reply', label: '数字人回复了同事的提问', kind: 'twin-replied' },
+        { id: 'count', label: '房间产生足够对话（≥4 条消息）', kind: 'message-count', target: 4 },
+      ],
     },
     {
       name: '产品讨论群',
@@ -43,6 +47,10 @@ export function buildBasicChatScenario(colleagueUserIds: string[]): TestRoomDef[
         { ...byRole('zhao', 3), goal: goal2 },
       ],
       goal: goal2,
+      asserts: [
+        { id: 'reply', label: '数字人回复了同事的提问', kind: 'twin-replied' },
+        { id: 'count', label: '房间产生足够对话（≥4 条消息）', kind: 'message-count', target: 4 },
+      ],
     },
   ]
 }

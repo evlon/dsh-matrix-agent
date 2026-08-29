@@ -89,13 +89,29 @@ npm start
 
 干预经 `POST /control`（body: `{ roomId, action, colleagueId?, text?, asTwin? }`）→ orchestrator 指令队列 → 房间循环消费。
 
+## 断言与测试报告（闭环）
+
+每个场景房间可定义**断言**（`TestRoomDef.asserts`），房间跑完（done）后自动评估：
+
+| 断言 kind | 含义 |
+|---|---|
+| `twin-replied` | 数字人回复过同事 |
+| `twin-responded-in-time` | 数字人在超时内回复 |
+| `twin-mentioned-colleague` | 数字人回复包含 @提及 |
+| `message-count` | 房间消息总数 ≥ target |
+| `custom` | 自定义 `evaluate(ctx)` |
+
+- 房间卡显示 `✔ 断言全过` / `✘ 断言 N/M` 徽标，点击展开断言明细
+- 对话流显示每条断言结果（🧪）
+- 场景报告：所有房间聚合（通过/失败），顶部场景信息显示当前轮次
+
+**改进循环**：跑完看断言 → 失败的断言即改进清单 → 改 dsh-matrix-agent 插件 → 点「🔄 重新开始」重测 → 对照报告确认改进。
+
 ## 扩展：新场景
 
-在 `src/scenarios/` 新建场景文件，返回 `TestRoomDef[]`（房间 + 同事 persona + 目标），
-在 `src/index.ts` 替换 `buildBasicChatScenario(...)` 调用即可。
+在 `src/scenarios/` 新建场景文件，返回 `TestRoomDef[]`（房间 + 同事 persona + 目标 + 断言），
+在 `src/scenarios/index.ts` 注册到 `SCENARIOS` 即可（Web 场景下拉自动出现）。
 
-后续阶段（规划）：
-- 任务流转场景（发任务 → 数字人请示老板 → 批准 → 执行 → 交付）
-- 断言引擎（数字人应回复/应请示/应交付）
-- 测试报告（通过/失败/耗时）
-- 多群并发压力
+已注册场景：
+- `basic-chat`：基本对话（研发群 + 产品群，含回复/消息数断言）
+- `task-flow`：任务流转（占位；完整请示/交付流程需数字人开启 `digitalTwinMode`）

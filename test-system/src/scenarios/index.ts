@@ -4,6 +4,7 @@
  */
 import type { TestRoomDef } from '../orchestrator.js'
 import { buildBasicChatScenario } from './basic-chat.js'
+import { buildTaskFlowScenario } from './task-flow.js'
 
 export interface ScenarioDef {
   id: string
@@ -19,6 +20,12 @@ export const SCENARIOS: Record<string, ScenarioDef> = {
     name: '基本对话',
     description: '研发群 + 产品群，AI 同事与数字人多轮工作讨论（验证基础回复与上下文理解）',
     build: buildBasicChatScenario,
+  },
+  'task-flow': {
+    id: 'task-flow',
+    name: '任务流转',
+    description: '同事在群里给数字人派任务，观察其理解/响应（完整请示/交付流程需数字人开启 digitalTwinMode）',
+    build: buildTaskFlowScenario,
   },
 }
 

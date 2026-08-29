@@ -23,6 +23,31 @@ export interface TestRoomDef {
   colleagues: ColleaguePersona[]
   /** 测试目标（注入所有同事）。 */
   goal: string
+  /** 房间断言（done 后评估）。 */
+  asserts?: RoomAssert[]
+}
+
+/** 断言上下文（供 evaluate 使用）。 */
+export interface AssertContext {
+  roomId: string
+  events: Array<{ kind: string; from: string; text?: string; ts: number }>
+  /** 数字人消息数。 */
+  twinMessages: number
+  /** 同事消息数。 */
+  colleagueMessages: number
+  /** 实际轮次。 */
+  rounds: number
+}
+
+/** 房间断言。 */
+export interface RoomAssert {
+  id: string
+  label: string
+  kind: 'twin-replied' | 'twin-responded-in-time' | 'twin-mentioned-colleague' | 'message-count' | 'custom'
+  /** message-count 目标。 */
+  target?: number
+  /** custom 评估器。 */
+  evaluate?: (ctx: AssertContext) => boolean | Promise<boolean>
 }
 
 /** 数字人账号。 */
@@ -394,12 +419,83 @@ export class Orchestrator {
       }
       state.status = 'done'
       emit('system', '系统', `房间「${def.name}」测试完成（${round} 轮）`, 'done')
+      // 房间断言评估（done 后）。
+      if (def.asserts !== undefined && def.asserts.length > 0) {
+        await this.evaluateAsserts(room, def, state, emit, round)
+      }
     } catch (error) {
       state.status = 'error'
       emit('system', '系统', `房间失败: ${error instanceof Error ? error.message : String(error)}`, 'error')
     }
     // 房间结束：保留 controls 供查询，但标记 finished（control() 返回友好提示）。
     control.finished = true
+  }
+
+  /** 评估房间断言（done 后），结果写入 state.asserts/passed 并推事件。 */
+  private async evaluateAsserts(
+    room: RunningRoom,
+    def: TestRoomDef,
+    state: RoomState,
+    emit: (kind: TestEvent['kind'], from: string, text?: string, status?: string, round?: number) => void,
+    round: number,
+  ): Promise<void> {
+    const asserts = def.asserts ?? []
+    const ctx: AssertContext = {
+      roomId: room.roomId,
+      events: this.bus.recent(2000).filter((e) => e.roomId === room.roomId),
+      twinMessages: 0,
+      colleagueMessages: 0,
+      rounds: round,
+    }
+    // 统计数字人/同事消息（从事件流）。
+    for (const e of ctx.events) {
+      if (e.kind === 'twin') ctx.twinMessages += 1
+      else if (e.kind === 'colleague') ctx.colleagueMessages += 1
+    }
+    const results: Array<{ id: string; label: string; passed: boolean; detail?: string }> = []
+    let allPassed = true
+    for (const assert of asserts) {
+      let passed = false
+      let detail: string | undefined
+      try {
+        switch (assert.kind) {
+          case 'twin-replied':
+            passed = ctx.twinMessages > 0
+            detail = passed ? `数字人回复 ${ctx.twinMessages} 次` : '数字人未回复'
+            break
+          case 'twin-responded-in-time':
+            // 有 assert 事件非"无响应"即认为及时（简单近似：存在 twin 消息即通过）。
+            passed = ctx.twinMessages > 0
+            detail = passed ? `数字人回复 ${ctx.twinMessages} 次` : '数字人未在超时内回复'
+            break
+          case 'twin-mentioned-colleague':
+            passed = ctx.events.some((e) => e.kind === 'twin' && (e.text ?? '').includes('@'))
+            detail = passed ? '数字人回复包含 @提及' : '数字人回复未 @同事'
+            break
+          case 'message-count':
+            passed = ctx.colleagueMessages + ctx.twinMessages >= (assert.target ?? 1)
+            detail = `消息总数 ${ctx.colleagueMessages + ctx.twinMessages}（目标 ≥${assert.target ?? 1}）`
+            break
+          case 'custom':
+            if (assert.evaluate !== undefined) passed = await assert.evaluate(ctx)
+            else passed = false
+            detail = passed ? '自定义断言通过' : '自定义断言失败'
+            break
+          default:
+            passed = false
+            detail = `未知断言类型: ${assert.kind}`
+        }
+      } catch (error) {
+        passed = false
+        detail = `断言执行错误: ${error instanceof Error ? error.message : String(error)}`
+      }
+      results.push({ id: assert.id, label: assert.label, passed, detail })
+      if (!passed) allPassed = false
+      emit('assert-result', '系统', undefined, `${assert.label}: ${passed ? '通过' : '失败'}${detail ? '（' + detail + '）' : ''}`, round)
+    }
+    state.asserts = results
+    state.passed = allPassed
+    emit('system', '系统', `断言结果: ${allPassed ? '✅ 全部通过' : `❌ ${results.filter((r) => !r.passed).length}/${results.length} 未通过`}`, allPassed ? 'done' : 'assert-fail', round)
   }
 
   /** 消费房间干预队列；返回 true 表示应停止循环（stop）。 */

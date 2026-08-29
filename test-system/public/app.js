@@ -16,7 +16,7 @@
 
   function ensureRoom(event) {
     if (!rooms.has(event.roomId)) {
-      rooms.set(event.roomId, { name: event.roomName, status: 'creating', paused: false, round: 0, activeColleague: '', members: [], events: [] })
+      rooms.set(event.roomId, { name: event.roomName, status: 'creating', paused: false, round: 0, activeColleague: '', members: [], events: [], asserts: [], passed: undefined })
     }
     const room = rooms.get(event.roomId)
     room.name = event.roomName
@@ -75,9 +75,23 @@
       const badgeClass = room.status === 'active' ? (room.paused ? 'paused' : 'active') : room.status === 'done' ? 'done' : room.status === 'error' ? 'error' : 'creating'
       const badgeLabel = room.status === 'active' ? (room.paused ? '⏸ 已暂停' : '进行中') : room.status === 'done' ? '完成' : room.status === 'error' ? '失败' : '创建中'
       const colleague = room.activeColleague ? ' · ' + room.activeColleague + '发言' : ''
+      let assertBadge = ''
+      if (room.status === 'done' && room.asserts && room.asserts.length > 0) {
+        const failCount = room.asserts.filter((a) => !a.passed).length
+        assertBadge = failCount === 0
+          ? ' <span class="badge ok">✔ 断言全过</span>'
+          : ` <span class="badge fail">✘ 断言 ${failCount}/${room.asserts.length}</span>`
+      }
       card.innerHTML = `<div class="name">${esc(room.name)}</div>
         <div class="meta"><span class="badge ${badgeClass}">${badgeLabel}</span>
-        <span>第 ${room.round || 0} 轮</span><span>${room.events.length} 条</span>${colleague}</div>`
+        <span>第 ${room.round || 0} 轮</span><span>${room.events.length} 条</span>${colleague}${assertBadge}</div>`
+      if (room.status === 'done' && room.asserts && room.asserts.length > 0) {
+        const detail = document.createElement('div')
+        detail.className = 'assert-detail'
+        detail.innerHTML = room.asserts.map((a) =>
+          `<div class="assert-row ${a.passed ? 'ok' : 'fail'}">${a.passed ? '✔' : '✘'} ${esc(a.label)}${a.detail ? ' <span class="muted">(' + esc(a.detail) + ')</span>' : ''}</div>`).join('')
+        card.appendChild(detail)
+      }
       card.addEventListener('click', () => {
         selectedRoomId = roomId
         renderRoomList()
@@ -110,6 +124,10 @@
         const isErr = (event.status || '').includes('失败') || (event.status || '').includes('无响应') || (event.status || '').includes('error')
         el.className = 'msg assert' + (isErr ? ' err' : ' ok')
         el.textContent = '⚑ ' + (event.status || '')
+      } else if (event.kind === 'assert-result') {
+        const isOk = (event.status || '').startsWith('通过') || (event.status || '').includes('通过）')
+        el.className = 'msg assert' + (isOk ? ' ok' : ' err')
+        el.textContent = '🧪 ' + (event.status || '')
       }
       chatStreamEl.appendChild(el)
     }
@@ -195,7 +213,7 @@
     twinInjectionAvailable = !!data.twinInjectionAvailable
     renderScenarioInfo(data.activeScenario)
     for (const room of data.rooms || []) {
-      rooms.set(room.roomId, { name: room.roomName, status: room.status, paused: !!room.paused, round: room.round, activeColleague: room.activeColleague || '', members: room.members || [], events: [] })
+      rooms.set(room.roomId, { name: room.roomName, status: room.status, paused: !!room.paused, round: room.round, activeColleague: room.activeColleague || '', members: room.members || [], events: [], asserts: room.asserts || [], passed: room.passed })
     }
     for (const event of data.events || []) {
       if (event.roomId === 'scenario') continue
