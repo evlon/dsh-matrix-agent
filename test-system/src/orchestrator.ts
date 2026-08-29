@@ -85,6 +85,12 @@ export class Orchestrator {
   private readonly rooms = new Map<string, RunningRoom>()
   private readonly controls = new Map<string, RoomControl>()
   private readonly stopFlags = new Set<string>()
+  /** 房间占位 id → 场景 def（单房间重跑用）。 */
+  private readonly roomDefs = new Map<string, TestRoomDef>()
+  /** 当前场景信息。 */
+  private currentScenario: { id: string; name: string; run: number } | undefined
+  /** 场景启动时的同事 userId（重跑用）。 */
+  private scenarioUserIds: string[] = []
 
   constructor(options: OrchestratorOptions) {
     this.config = options.config
@@ -165,6 +171,98 @@ export class Orchestrator {
     }
     found.control.queue.push(cmd)
     return { ok: true }
+  }
+
+  /** 当前场景信息（供 Web 显示）。 */
+  get activeScenario(): { id: string; name: string; run: number } | undefined {
+    return this.currentScenario
+  }
+
+  /**
+   * 启动一个场景：停止并清空所有当前房间 → 构建场景房间 → 逐个启动。
+   * @param scenarioId 场景 id（scenarios 注册表）
+   * @param colleagueUserIds 同事 userId（场景 build 用）
+   */
+  startScenario(scenarioId: string, scenarioName: string, defs: TestRoomDef[]): { ok: boolean; message?: string } {
+    // 停止并清空现有房间。
+    this.clearAllRooms()
+    // 记录场景信息（run 计数递增）。
+    const run = (this.currentScenario?.id === scenarioId ? this.currentScenario.run : 0) + 1
+    this.currentScenario = { id: scenarioId, name: scenarioName, run }
+    // 启动场景房间。
+    for (const def of defs) {
+      const room = this.startRoom(def)
+      this.roomDefs.set(room.roomId, def)
+    }
+    return { ok: true, message: `已启动场景「${scenarioName}」（第 ${run} 轮，${defs.length} 个房间）` }
+  }
+
+  /** 停止当前场景的所有房间（graceful），并清空房间列表。 */
+  stopScenario(): { ok: boolean; message?: string } {
+    const count = this.rooms.size
+    this.stopAll()
+    // 房间循环会陆续退出；先清掉引用，避免旧房间残留。
+    this.rooms.clear()
+    this.controls.clear()
+    this.roomDefs.clear()
+    this.currentScenario = undefined
+    this.emitScenarioEvent(`已停止全部房间（${count} 个），可重新开始`)
+    return { ok: true }
+  }
+
+  /** 重跑单个房间（该房间的 def 重建）。 */
+  restartRoom(roomId: string): { ok: boolean; message?: string } {
+    const def = this.findRoomDef(roomId)
+    if (def === undefined) return { ok: false, message: `找不到该房间的场景定义: ${roomId}` }
+    // 停止旧房间并清理。
+    const old = this.findRoomByAnyId(roomId)
+    if (old !== undefined) {
+      this.stopFlags.add(old.roomId)
+      this.rooms.delete(old.roomId)
+      this.controls.delete(old.roomId)
+      this.roomDefs.delete(old.roomId)
+    }
+    // 启动新房间。
+    const room = this.startRoom(def)
+    this.roomDefs.set(room.roomId, def)
+    return { ok: true, message: '已重跑该房间' }
+  }
+
+  /** 场景事件（全局，无房间归属）。 */
+  private emitScenarioEvent(text: string): void {
+    this.bus.emit({
+      roomId: 'scenario',
+      roomName: '系统',
+      ts: Date.now(),
+      kind: 'system',
+      from: '系统',
+      text,
+    })
+  }
+
+  /** 按占位 id 或真实 id 找房间 def。 */
+  private findRoomDef(roomId: string): TestRoomDef | undefined {
+    const room = this.findRoomByAnyId(roomId)
+    if (room === undefined) return undefined
+    return this.roomDefs.get(room.roomId)
+  }
+
+  /** 按占位 id 或真实 id 找房间。 */
+  private findRoomByAnyId(roomId: string): RunningRoom | undefined {
+    for (const [id, room] of this.rooms) {
+      if (id === roomId || room.state.roomId === roomId) return room
+    }
+    return undefined
+  }
+
+  /** 停止并清空所有房间（场景切换/重跑用）。 */
+  private clearAllRooms(): void {
+    for (const roomId of this.rooms.keys()) {
+      this.stopFlags.add(roomId)
+    }
+    this.rooms.clear()
+    this.controls.clear()
+    this.roomDefs.clear()
   }
 
   /** 启动一个测试房间：同步建句柄并立即返回，对话循环在后台推进。 */

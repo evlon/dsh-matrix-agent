@@ -92,6 +92,9 @@ body {
 /* 控制条与按钮 */
 .topbar-right { display: flex; align-items: center; gap: 12px; }
 .global-controls { display: flex; gap: 6px; }
+.scenario-controls { display: flex; gap: 6px; align-items: center; }
+.scenario-info { font-size: 12px; color: var(--accent); }
+.scenario-info.idle { color: var(--muted); }
 
 .ctl-btn {
   padding: 4px 10px;

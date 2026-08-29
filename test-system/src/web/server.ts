@@ -21,6 +21,18 @@ export interface WebServerOptions {
   control?: (cmd: ControlCmd) => { ok: boolean; message?: string }
   /** 数字人身份注入是否可用（供 UI 提示）。 */
   twinInjectionAvailable?: boolean
+  /** 当前场景信息。 */
+  getActiveScenario?: () => { id: string; name: string; run: number } | undefined
+  /** 场景控制（start/stop/restart/room-restart）。 */
+  scenario?: (req: ScenarioRequest) => { ok: boolean; message?: string }
+}
+
+/** 场景控制请求。 */
+export interface ScenarioRequest {
+  action: 'start' | 'stop' | 'restart' | 'room-restart'
+  scenarioId?: string
+  scenarioName?: string
+  roomId?: string
 }
 
 export class TestWebServer {
@@ -83,7 +95,34 @@ export class TestWebServer {
         }
         if (path === '/state') {
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ rooms: this.options.getRooms(), events: bus.recent(300), twinInjectionAvailable: this.options.twinInjectionAvailable ?? false }))
+          res.end(JSON.stringify({
+            rooms: this.options.getRooms(),
+            events: bus.recent(300),
+            twinInjectionAvailable: this.options.twinInjectionAvailable ?? false,
+            activeScenario: this.options.getActiveScenario?.() ?? undefined,
+          }))
+          return
+        }
+        if (path === '/scenario' && req.method === 'POST') {
+          // 场景控制（start/stop/restart/room-restart）。
+          let body = ''
+          req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
+          req.on('end', () => {
+            try {
+              const req2 = JSON.parse(body) as ScenarioRequest
+              if (this.options.scenario === undefined) {
+                res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' })
+                res.end(JSON.stringify({ ok: false, message: '场景控制未启用' }))
+                return
+              }
+              const result = this.options.scenario(req2)
+              res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json; charset=utf-8' })
+              res.end(JSON.stringify(result))
+            } catch {
+              res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' })
+              res.end(JSON.stringify({ ok: false, message: '无效的场景指令 JSON' }))
+            }
+          })
           return
         }
         if (path === '/control' && req.method === 'POST') {

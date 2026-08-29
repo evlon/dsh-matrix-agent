@@ -10,6 +10,13 @@
   <header class="topbar">
     <h1>🧪 数字人测试台</h1>
     <div class="topbar-right">
+      <div class="scenario-controls">
+        <select id="scenario-select" class="ctl-select" title="选择测试场景"></select>
+        <button id="btn-scenario-start" class="ctl-btn primary">▶ 开始测试</button>
+        <button id="btn-scenario-restart" class="ctl-btn" title="重新开始当前场景">🔄 重新开始</button>
+        <button id="btn-scenario-stop" class="ctl-btn danger">⏹ 停止</button>
+      </div>
+      <span id="scenario-info" class="scenario-info"></span>
       <div class="global-controls">
         <button id="btn-pause-all" class="ctl-btn" title="暂停全部房间">⏸ 全部暂停</button>
         <button id="btn-resume-all" class="ctl-btn" title="继续全部房间">▶ 全部继续</button>
@@ -33,6 +40,7 @@
           <button class="ctl-btn" data-act="resume">▶ 继续</button>
           <button class="ctl-btn" data-act="skip-wait">⏭ 跳过等待</button>
           <button class="ctl-btn danger" data-act="stop">⏹ 停止</button>
+          <button class="ctl-btn" data-act="room-restart" title="重跑本房间">🔄 重跑本房间</button>
         </div>
         <div class="control-row">
           <span class="control-label">换同事：</span>

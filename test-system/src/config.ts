@@ -23,6 +23,8 @@ export interface TestConfig {
   roundsPerRoom: number
   replyTimeoutSecs: number
   roomPrefix: string
+  /** 启动时是否自动跑默认场景（basic-chat）。默认 true；false 则等用户在 Web 点「开始」。 */
+  autoStart: boolean
 }
 
 function loadDotEnv(): Record<string, string> {
@@ -86,5 +88,6 @@ export function loadConfig(): TestConfig {
     roundsPerRoom: Number(env['ROUNDS_PER_ROOM'] ?? '6'),
     replyTimeoutSecs: Number(env['REPLY_TIMEOUT_SECS'] ?? '90'),
     roomPrefix: env['ROOM_PREFIX'] ?? 'twin-test',
+    autoStart: env['AUTO_START'] !== 'false',
   }
 }

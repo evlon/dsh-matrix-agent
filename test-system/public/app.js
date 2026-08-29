@@ -46,6 +46,16 @@
     }).catch(() => setCtlMsg('✘ 网络错误', false))
   }
 
+  function sendScenario(req) {
+    fetch('/scenario', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    }).then((res) => res.json()).then((r) => {
+      setCtlMsg(r.ok ? '✔ ' + (r.message || '已执行') : '✘ ' + (r.message || '失败'), r.ok)
+    }).catch(() => setCtlMsg('✘ 网络错误', false))
+  }
+
   function setCtlMsg(text, ok, persist) {
     ctlMsgEl.textContent = text
     ctlMsgEl.className = 'ctl-msg ' + (ok ? 'ok' : 'err')
@@ -114,19 +124,18 @@
     const room = rooms.get(selectedRoomId)
     controlBarEl.style.display = 'block'
     const finished = room.status === 'done' || room.status === 'error'
-    // 房间已结束：禁用所有控制，提示重新启动。
+    // 房间已结束：除「重跑本房间」外禁用其余控制。
     const buttons = controlBarEl.querySelectorAll('button')
     const selects = controlBarEl.querySelectorAll('select')
     const input = document.getElementById('inj-text')
+    for (const b of buttons) {
+      const act = b.dataset.act
+      b.disabled = finished && act !== 'room-restart'
+    }
+    for (const s of selects) s.disabled = finished
+    if (input) input.disabled = finished
     if (finished) {
-      for (const b of buttons) b.disabled = true
-      for (const s of selects) s.disabled = true
-      if (input) input.disabled = true
-      setCtlMsg('⚠ 房间已结束，无法干预（可重新启动测试）', false, true)
-    } else {
-      for (const b of buttons) b.disabled = false
-      for (const s of selects) s.disabled = false
-      if (input) input.disabled = false
+      setCtlMsg('⚠ 房间已结束：可「🔄 重跑本房间」，或在顶部「重新开始」整个场景', false, true)
     }
     // 换同事下拉：房间成员里去掉数字人。
     const colleagues = (room.members || []).filter((m) => !m.startsWith('@ai-'))
@@ -154,6 +163,11 @@
   }
 
   function handleEvent(event) {
+    if (event.roomId === 'scenario') {
+      // 全局场景事件：不当作房间，仅在控制条提示区显示。
+      setCtlMsg('ℹ ' + (event.text || ''), true)
+      return
+    }
     const room = ensureRoom(event)
     if (event.kind === 'system' && event.status) {
       if (event.status === 'creating') room.status = 'creating'
@@ -179,10 +193,12 @@
   // 初始拉取状态。
   fetch('/state').then((res) => res.json()).then((data) => {
     twinInjectionAvailable = !!data.twinInjectionAvailable
+    renderScenarioInfo(data.activeScenario)
     for (const room of data.rooms || []) {
       rooms.set(room.roomId, { name: room.roomName, status: room.status, paused: !!room.paused, round: room.round, activeColleague: room.activeColleague || '', members: room.members || [], events: [] })
     }
     for (const event of data.events || []) {
+      if (event.roomId === 'scenario') continue
       ensureRoom(event)
     }
     if (data.rooms && data.rooms.length > 0) selectedRoomId = data.rooms[0].roomId
@@ -217,6 +233,49 @@
   document.getElementById('btn-resume-all').addEventListener('click', () => sendGlobal('resume'))
   document.getElementById('btn-stop-all').addEventListener('click', () => sendGlobal('stop'))
 
+  // 场景控制。
+  const scenarioSelectEl = document.getElementById('scenario-select')
+  const btnStart = document.getElementById('btn-scenario-start')
+  const btnRestart = document.getElementById('btn-scenario-restart')
+  const btnStop = document.getElementById('btn-scenario-stop')
+  const scenarioInfoEl = document.getElementById('scenario-info')
+
+  btnStart.addEventListener('click', () => {
+    sendScenario({ action: 'start', scenarioId: scenarioSelectEl.value })
+  })
+  btnRestart.addEventListener('click', () => {
+    sendScenario({ action: 'restart', scenarioId: scenarioSelectEl.value })
+  })
+  btnStop.addEventListener('click', () => {
+    sendScenario({ action: 'stop' })
+  })
+
+  // 场景下拉填充（当前只有 basic-chat，后续场景库扩展后这里同步）。
+  function fillScenarios() {
+    const known = [
+      { id: 'basic-chat', name: '基本对话（研发群+产品群）' },
+    ]
+    scenarioSelectEl.innerHTML = ''
+    for (const s of known) {
+      const opt = document.createElement('option')
+      opt.value = s.id
+      opt.textContent = s.name
+      scenarioSelectEl.appendChild(opt)
+    }
+  }
+  fillScenarios()
+
+  // /state 返回 activeScenario 时显示。
+  function renderScenarioInfo(active) {
+    if (active) {
+      scenarioInfoEl.textContent = `场景「${active.name}」· 第 ${active.run} 轮`
+      scenarioInfoEl.className = 'scenario-info'
+    } else {
+      scenarioInfoEl.textContent = '未运行'
+      scenarioInfoEl.className = 'scenario-info idle'
+    }
+  }
+
   controlBarEl.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-act]')
     if (!btn) return
@@ -234,6 +293,8 @@
         sendControl('inject', { colleagueId: identity.slice(4), text })
       }
       injTextEl.value = ''
+    } else if (act === 'room-restart') {
+      sendScenario({ action: 'room-restart', roomId: selectedRoomId })
     } else {
       sendControl(act)
     }
