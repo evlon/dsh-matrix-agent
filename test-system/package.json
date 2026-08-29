@@ -1,0 +1,17 @@
+{
+  "name": "dsh-matrix-twin-test-system",
+  "version": "0.1.0",
+  "description": "Digital twin behavior test system: simulate multiple Matrix rooms and AI colleagues against a live dsh-matrix-agent twin, with a real-time web UI.",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node lib/index.js",
+    "dev": "tsc -p tsconfig.json --watch"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

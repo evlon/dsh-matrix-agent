@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>数字人测试台</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>🧪 数字人测试台</h1>
+    <div class="topbar-right">
+      <span id="conn-status" class="conn-status">连接中…</span>
+    </div>
+  </header>
+  <main class="layout">
+    <aside class="rooms-panel">
+      <h2>房间</h2>
+      <div id="room-list" class="room-list"><p class="muted">等待场景启动…</p></div>
+    </aside>
+    <section class="chat-panel">
+      <div id="chat-header" class="chat-header"><h2>选择一个房间查看对话</h2></div>
+      <div id="chat-stream" class="chat-stream"></div>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
