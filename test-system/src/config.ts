@@ -15,6 +15,8 @@ export interface ColleagueAccount {
 export interface TestConfig {
   homeserver: string
   twinUserId: string
+  /** 数字人账号 access token（数字人身份注入用；缺省禁用该功能）。 */
+  twinAccessToken?: string
   colleagues: ColleagueAccount[]
   llm: { baseUrl: string; apiKey: string; model: string }
   web: { host: string; port: number }
@@ -70,6 +72,7 @@ export function loadConfig(): TestConfig {
   return {
     homeserver: required('HOMESERVER').replace(/\/+$/, ''),
     twinUserId: required('TWIN_USER_ID'),
+    twinAccessToken: env['TWIN_ACCESS_TOKEN'] ?? undefined,
     colleagues: parseColleagues(required('COLLEAGUE_TOKENS')),
     llm: {
       baseUrl: required('LLM_BASE_URL').replace(/\/+$/, ''),

@@ -31,6 +31,8 @@ async function main(): Promise<void> {
     port: config.web.port,
     bus,
     getRooms: () => orchestrator.roomsSnapshot,
+    control: (cmd) => orchestrator.control(cmd),
+    twinInjectionAvailable: orchestrator.twinInjectionAvailable,
   })
   await web.start()
 
@@ -38,7 +40,7 @@ async function main(): Promise<void> {
   const rooms = buildBasicChatScenario(config.colleagues.map((c) => c.userId))
   console.log(`[test] 启动场景: ${rooms.length} 个房间`)
 
-  const running = await Promise.all(rooms.map((def) => orchestrator.startRoom(def)))
+  const running = rooms.map((def) => orchestrator.startRoom(def))
   console.log(`[test] 已启动 ${running.length} 个测试房间，Web UI: http://${config.web.host}:${config.web.port}`)
   console.log('[test] 按 Ctrl+C 停止')
 

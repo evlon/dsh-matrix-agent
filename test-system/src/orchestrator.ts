@@ -2,6 +2,14 @@
  * 测试编排器：按场景推进多个房间的对话。
  * 每个房间独立循环：选一个同事 → AI 生成发言 → 发到房间 → 等数字人回复 → 记录事件 → 下一轮。
  * 所有事件推入 EventBus（Web UI 实时展示）。
+ *
+ * 支持 Web UI 干预（control()）：
+ * - pause / resume：房间循环在下一轮开始前挂起/继续
+ * - stop：提前结束房间
+ * - skip-wait：跳过当前"等数字人回复"
+ * - inject：以指定身份发消息（同事账号，或数字人账号【需 TWIN_ACCESS_TOKEN】）
+ * - switch：换同事发言（从下一轮起用指定同事）
+ * 全局指令（roomId 为 'all'）：pause-all / resume-all / stop-all
  */
 import { AiColleague, type ColleaguePersona } from './ai-colleague.js'
 import { MatrixClient, type RoomMessage } from './matrix-client.js'
@@ -30,11 +38,37 @@ export interface OrchestratorOptions {
   fetchFn?: typeof fetch
 }
 
+/** 干预指令（来自 Web UI）。 */
+export interface ControlCmd {
+  /** 目标房间；'all' 或无表示全局。 */
+  roomId?: string
+  action: 'pause' | 'resume' | 'stop' | 'skip-wait' | 'inject' | 'switch' | 'pause-all' | 'resume-all' | 'stop-all'
+  /** 同事 userId（inject 的发送身份 / switch 的目标同事）。 */
+  colleagueId?: string
+  /** inject 消息文本。 */
+  text?: string
+  /** inject 是否用数字人身份（需配置 TWIN_ACCESS_TOKEN）。 */
+  asTwin?: boolean
+}
+
 /** 运行中的房间句柄（供 UI/停止用）。 */
 export interface RunningRoom {
   roomId: string
   state: RoomState
   stop(): void
+}
+
+/** 房间内部控制状态。 */
+interface RoomControl {
+  queue: ControlCmd[]
+  paused: boolean
+  pausedResolve: (() => void) | undefined
+  skipWait: boolean
+  nextColleagueId: string | undefined
+  /** 占位 id（rooms/controls map 的 key）。 */
+  placeholderId: string
+  /** 真实 Matrix 房间 id（创建后更新；control 按它匹配）。 */
+  realRoomId: string | undefined
 }
 
 export class Orchestrator {
@@ -44,7 +78,10 @@ export class Orchestrator {
   private readonly clients: MatrixClient[] = []
   private readonly colleague: AiColleague
   private readonly twin: TwinIdentity
+  /** 数字人账号客户端（数字人身份注入用；未配 token 时 undefined）。 */
+  private twinClient: MatrixClient | undefined
   private readonly rooms = new Map<string, RunningRoom>()
+  private readonly controls = new Map<string, RoomControl>()
   private readonly stopFlags = new Set<string>()
 
   constructor(options: OrchestratorOptions) {
@@ -61,21 +98,28 @@ export class Orchestrator {
     })
   }
 
-  /** 初始化：每个同事一个 Matrix 客户端。 */
+  /** 初始化：每个同事一个 Matrix 客户端；数字人账号（若配了 token）。 */
   init(): void {
     for (const account of this.config.colleagues) {
       this.clients.push(new MatrixClient({ homeserver: this.config.homeserver, account, fetchFn: this.fetchFn }))
     }
     if (this.clients.length === 0) throw new Error('没有同事账号（检查 COLLEAGUE_TOKENS）')
+    if (this.config.twinAccessToken !== undefined && this.config.twinAccessToken !== '') {
+      this.twinClient = new MatrixClient({
+        homeserver: this.config.homeserver,
+        account: { userId: this.twin.userId, displayName: this.twin.displayName, accessToken: this.config.twinAccessToken },
+        fetchFn: this.fetchFn,
+      })
+    }
   }
 
   get roomsSnapshot(): RoomState[] {
     return [...this.rooms.values()].map((r) => r.state)
   }
 
-  /** 启动一个测试房间（创建房间 + invite 数字人 + 开始对话循环，异步）。 */
-  startRoom(def: TestRoomDef): Promise<RunningRoom> {
-    return this.runRoom(def)
+  /** 是否已配置数字人账号（数字人身份注入可用）。 */
+  get twinInjectionAvailable(): boolean {
+    return this.twinClient !== undefined
   }
 
   /** 停止所有房间。 */
@@ -86,13 +130,42 @@ export class Orchestrator {
     }
   }
 
-  private async runRoom(def: TestRoomDef): Promise<RunningRoom> {
+  /** 干预入口（Web UI 调用）。全局指令（'all'/无 roomId）分发到所有房间。 */
+  control(cmd: ControlCmd): { ok: boolean; message?: string } {
+    if (cmd.action === 'pause-all' || cmd.action === 'resume-all' || cmd.action === 'stop-all' || cmd.roomId === undefined || cmd.roomId === 'all') {
+      const action = cmd.action === 'pause-all' ? 'pause' : cmd.action === 'resume-all' ? 'resume' : cmd.action === 'stop-all' ? 'stop' : cmd.action
+      for (const roomId of this.rooms.keys()) {
+        this.controls.get(roomId)?.queue.push({ ...cmd, roomId, action })
+      }
+      return { ok: true }
+    }
+    // 按真实房间 id 或占位 id 查找 control。
+    let found: { id: string; control: RoomControl } | undefined
+    for (const [id, control] of this.controls) {
+      if (id === cmd.roomId || control.realRoomId === cmd.roomId) {
+        found = { id, control }
+        break
+      }
+    }
+    if (found === undefined) return { ok: false, message: `房间不存在: ${cmd.roomId}` }
+    if (cmd.action === 'inject' && cmd.asTwin === true && this.twinClient === undefined) {
+      return { ok: false, message: '未配置数字人账号 token（TWIN_ACCESS_TOKEN），无法以数字人身份注入' }
+    }
+    found.control.queue.push(cmd)
+    return { ok: true }
+  }
+
+  /** 启动一个测试房间：同步建句柄并立即返回，对话循环在后台推进。 */
+  startRoom(def: TestRoomDef): RunningRoom {
     const roomId = `room-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    const control: RoomControl = { queue: [], paused: false, pausedResolve: undefined, skipWait: false, nextColleagueId: undefined, placeholderId: roomId, realRoomId: undefined }
+    this.controls.set(roomId, control)
     const state: RoomState = {
       roomId,
       roomName: def.name,
       members: [...def.colleagues.map((c) => c.userId), this.twin.userId],
       status: 'creating',
+      paused: false,
       round: 0,
       messageCount: 0,
       lastEventTs: Date.now(),
@@ -103,6 +176,13 @@ export class Orchestrator {
       stop: () => { this.stopFlags.add(roomId) },
     }
     this.rooms.set(roomId, room)
+    void this.runRoom(room, control, def)
+    return room
+  }
+
+  private async runRoom(room: RunningRoom, control: RoomControl, def: TestRoomDef): Promise<void> {
+    const roomId = room.roomId
+    const state = room.state
 
     const emit = (kind: TestEvent['kind'], from: string, text?: string, status?: string, round?: number): void => {
       const event: TestEvent = { roomId, roomName: def.name, ts: Date.now(), kind, from, text, status, round }
@@ -120,6 +200,7 @@ export class Orchestrator {
         ...def.colleagues.slice(1).map((c) => c.userId),
       ])
       state.roomId = realRoomId
+      control.realRoomId = realRoomId
       state.status = 'active'
       emit('system', '系统', `房间已创建 ${realRoomId}`, 'active')
 
@@ -132,14 +213,37 @@ export class Orchestrator {
       const allDone = new Set<string>()
       while (round < maxRounds) {
         if (this.stopFlags.has(roomId)) break
+
+        // 消费干预指令（pause 挂起 / stop 跳出 / inject 发送 / switch 换人）。
+        const shouldBreak = await this.drainControls(roomId, realRoomId, def, emit, round)
+        if (shouldBreak) break
+        if (control.paused) {
+          // 暂停：挂起直到 resume。
+          state.paused = true
+          emit('system', '系统', '⏸ 已暂停（等待继续）', 'paused', round)
+          await new Promise<void>((resolve) => { control.pausedResolve = resolve })
+          control.pausedResolve = undefined
+          state.paused = false
+          emit('system', '系统', '▶ 已继续', 'active', round)
+          continue
+        }
+
         round += 1
         state.round = round
 
         // 收集房间历史（去重）。
         const history = await this.collectHistory(realRoomId)
 
-        // 选当前轮次的同事（轮流）。
-        const persona = def.colleagues[(round - 1) % def.colleagues.length]
+        // 选当前轮次的同事：switch 指定优先，否则轮流。
+        let persona: ColleaguePersona
+        if (control.nextColleagueId !== undefined) {
+          const found = def.colleagues.find((c) => c.userId === control.nextColleagueId)
+          persona = found ?? def.colleagues[(round - 1) % def.colleagues.length]
+          control.nextColleagueId = undefined
+        } else {
+          persona = def.colleagues[(round - 1) % def.colleagues.length]
+        }
+        state.activeColleague = persona.displayName
         if (allDone.has(persona.userId)) continue
 
         // AI 生成发言。
@@ -166,13 +270,16 @@ export class Orchestrator {
         emit('colleague', persona.displayName, outText, undefined, round)
         await hostClient.sendText(realRoomId, outText)
 
-        // 等数字人回复（仅新增的数字人消息）。
+        // 等数字人回复（仅新增的数字人消息；可被 skip-wait/stop 中断）。
         const twinBefore = await this.countTwinMessages(realRoomId)
-        const twinReply = await this.waitForTwinReply(realRoomId, twinBefore, this.config.replyTimeoutSecs * 1000)
+        control.skipWait = false
+        const twinReply = await this.waitForTwinReply(roomId, realRoomId, twinBefore, this.config.replyTimeoutSecs * 1000)
         if (twinReply !== undefined) {
           emit('twin', this.twin.displayName, twinReply.body, undefined, round)
         } else {
-          emit('assert', '系统', undefined, `数字人 ${this.twin.displayName} 未在 ${this.config.replyTimeoutSecs}s 内回复（无响应）`, round)
+          emit('assert', '系统', undefined, control.skipWait
+            ? '已跳过等待（用户干预）'
+            : `数字人 ${this.twin.displayName} 未在 ${this.config.replyTimeoutSecs}s 内回复（无响应）`, round)
         }
       }
       state.status = 'done'
@@ -181,7 +288,66 @@ export class Orchestrator {
       state.status = 'error'
       emit('system', '系统', `房间失败: ${error instanceof Error ? error.message : String(error)}`, 'error')
     }
-    return room
+    this.controls.delete(roomId)
+  }
+
+  /** 消费房间干预队列；返回 true 表示应停止循环（stop）。 */
+  private async drainControls(
+    roomId: string,
+    realRoomId: string,
+    def: TestRoomDef,
+    emit: (kind: TestEvent['kind'], from: string, text?: string, status?: string, round?: number) => void,
+    round: number,
+  ): Promise<boolean> {
+    const control = this.controls.get(roomId)
+    if (control === undefined) return false
+    while (control.queue.length > 0) {
+      const cmd = control.queue.shift()
+      if (cmd === undefined) continue
+      switch (cmd.action) {
+        case 'pause':
+          control.paused = true
+          emit('system', '系统', '收到暂停指令', 'paused', round)
+          break
+        case 'resume':
+          control.paused = false
+          control.pausedResolve?.()
+          control.pausedResolve = undefined
+          break
+        case 'stop':
+          emit('system', '系统', '收到停止指令', 'done', round)
+          return true
+        case 'skip-wait':
+          control.skipWait = true
+          break
+        case 'switch': {
+          const found = def.colleagues.find((c) => c.userId === cmd.colleagueId)
+          if (found !== undefined) {
+            control.nextColleagueId = found.userId
+            emit('system', '系统', `已切换：下轮由 ${found.displayName} 发言`, 'active', round)
+          }
+          break
+        }
+        case 'inject': {
+          if (cmd.text === undefined || cmd.text.trim() === '') break
+          if (cmd.asTwin === true) {
+            if (this.twinClient === undefined) break
+            emit('colleague', this.twin.displayName, cmd.text, undefined, round)
+            await this.twinClient.sendText(realRoomId, cmd.text)
+          } else {
+            const persona = def.colleagues.find((c) => c.userId === cmd.colleagueId) ?? def.colleagues[0]
+            if (persona === undefined) break
+            const client = this.clients[def.colleagues.indexOf(persona) % this.clients.length]
+            emit('colleague', persona.displayName, cmd.text, undefined, round)
+            await client.sendText(realRoomId, cmd.text)
+          }
+          break
+        }
+        default:
+          break
+      }
+    }
+    return false
   }
 
   /** 轮询直到数字人加入房间（最多 120s）。 */
@@ -224,13 +390,19 @@ export class Orchestrator {
     }
   }
 
-  /** 等数字人回复：轮询房间消息，返回发送后**新增**的数字人消息（排除进群自我介绍等旧消息）。 */
-  private async waitForTwinReply(roomId: string, beforeTwinCount: number, timeoutMs: number): Promise<RoomMessage | undefined> {
+  /** 等数字人回复：轮询房间消息，返回发送后**新增**的数字人消息；可被 skip-wait / stop 中断。 */
+  private async waitForTwinReply(
+    roomId: string,
+    realRoomId: string,
+    beforeTwinCount: number,
+    timeoutMs: number,
+  ): Promise<RoomMessage | undefined> {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
       if (this.stopFlags.has(roomId)) return undefined
+      if (this.controls.get(roomId)?.skipWait === true) return undefined
       try {
-        const msgs = await this.clients[0].getRoomMessages(roomId, 30)
+        const msgs = await this.clients[0].getRoomMessages(realRoomId, 30)
         const twinMsgs = msgs.filter((m) => m.sender === this.twin.userId)
         if (twinMsgs.length > beforeTwinCount) {
           return twinMsgs[twinMsgs.length - 1]

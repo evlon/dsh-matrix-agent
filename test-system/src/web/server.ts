@@ -3,18 +3,24 @@
  * GET /          静态页（对话流 + 房间列表）
  * GET /events    SSE 事件流
  * GET /state     房间状态快照
+ * POST /control  干预指令（pause/resume/stop/inject/switch/skip-wait + 全局）
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type { EventBus } from '../events.js'
 import type { RoomState } from '../events.js'
+import type { ControlCmd } from '../orchestrator.js'
 
 export interface WebServerOptions {
   host: string
   port: number
   bus: EventBus
   getRooms: () => RoomState[]
+  /** 干预指令回调（orchestrator.control）。 */
+  control?: (cmd: ControlCmd) => { ok: boolean; message?: string }
+  /** 数字人身份注入是否可用（供 UI 提示）。 */
+  twinInjectionAvailable?: boolean
 }
 
 export class TestWebServer {
@@ -77,7 +83,29 @@ export class TestWebServer {
         }
         if (path === '/state') {
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ rooms: this.options.getRooms(), events: bus.recent(300) }))
+          res.end(JSON.stringify({ rooms: this.options.getRooms(), events: bus.recent(300), twinInjectionAvailable: this.options.twinInjectionAvailable ?? false }))
+          return
+        }
+        if (path === '/control' && req.method === 'POST') {
+          // 干预指令。
+          let body = ''
+          req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
+          req.on('end', () => {
+            try {
+              const cmd = JSON.parse(body) as ControlCmd
+              if (this.options.control === undefined) {
+                res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' })
+                res.end(JSON.stringify({ ok: false, message: '控制接口未启用' }))
+                return
+              }
+              const result = this.options.control(cmd)
+              res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json; charset=utf-8' })
+              res.end(JSON.stringify(result))
+            } catch {
+              res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' })
+              res.end(JSON.stringify({ ok: false, message: '无效的指令 JSON' }))
+            }
+          })
           return
         }
         res.writeHead(404)

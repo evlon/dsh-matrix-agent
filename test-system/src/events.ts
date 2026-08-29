@@ -26,6 +26,9 @@ export interface RoomState {
   roomName: string
   members: string[]
   status: 'creating' | 'active' | 'done' | 'error'
+  paused: boolean
+  /** 当前/下一轮发言的同事显示名。 */
+  activeColleague?: string
   round: number
   messageCount: number
   lastEventTs: number

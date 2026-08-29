@@ -10,6 +10,11 @@
   <header class="topbar">
     <h1>🧪 数字人测试台</h1>
     <div class="topbar-right">
+      <div class="global-controls">
+        <button id="btn-pause-all" class="ctl-btn" title="暂停全部房间">⏸ 全部暂停</button>
+        <button id="btn-resume-all" class="ctl-btn" title="继续全部房间">▶ 全部继续</button>
+        <button id="btn-stop-all" class="ctl-btn danger" title="停止全部房间">⏹ 全部停止</button>
+      </div>
       <span id="conn-status" class="conn-status">连接中…</span>
     </div>
   </header>
@@ -21,6 +26,27 @@
     <section class="chat-panel">
       <div id="chat-header" class="chat-header"><h2>选择一个房间查看对话</h2></div>
       <div id="chat-stream" class="chat-stream"></div>
+      <div id="control-bar" class="control-bar" style="display:none">
+        <div class="control-row">
+          <span class="control-label">干预：</span>
+          <button class="ctl-btn" data-act="pause">⏸ 暂停</button>
+          <button class="ctl-btn" data-act="resume">▶ 继续</button>
+          <button class="ctl-btn" data-act="skip-wait">⏭ 跳过等待</button>
+          <button class="ctl-btn danger" data-act="stop">⏹ 停止</button>
+        </div>
+        <div class="control-row">
+          <span class="control-label">换同事：</span>
+          <select id="ctl-colleague" class="ctl-select"></select>
+          <button class="ctl-btn" data-act="switch">切换</button>
+        </div>
+        <div class="control-row">
+          <span class="control-label">注入：</span>
+          <select id="inj-identity" class="ctl-select"></select>
+          <input id="inj-text" class="ctl-input" placeholder="输入消息内容…" />
+          <button class="ctl-btn primary" data-act="inject">发送</button>
+        </div>
+        <div id="ctl-msg" class="ctl-msg"></div>
+      </div>
     </section>
   </main>
   <script src="/app.js"></script>

@@ -88,3 +88,46 @@ body {
 
 .muted { color: var(--muted); font-size: 13px; }
 .empty { color: var(--muted); font-size: 13px; text-align: center; margin-top: 40px; }
+
+/* 控制条与按钮 */
+.topbar-right { display: flex; align-items: center; gap: 12px; }
+.global-controls { display: flex; gap: 6px; }
+
+.ctl-btn {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel2);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.ctl-btn:hover { border-color: var(--accent); }
+.ctl-btn.danger:hover { border-color: var(--error); color: var(--error); }
+.ctl-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.control-bar {
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  padding: 10px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.control-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.control-label { font-size: 12px; color: var(--muted); }
+.ctl-select, .ctl-input {
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel2);
+  color: var(--text);
+  font-size: 12px;
+}
+.ctl-input { flex: 1; min-width: 200px; }
+.ctl-msg { font-size: 12px; min-height: 16px; }
+.ctl-msg.ok { color: var(--ok); }
+.ctl-msg.err { color: var(--error); }
+
+.badge.paused { background: rgba(217,119,6,.2); color: var(--warn); }
