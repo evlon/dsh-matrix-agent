@@ -21,7 +21,7 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { Config, DigitalTwinAccount } from './config.js'
-import { chunkText, markdownToHtml, formatToolCall, describeMedia, wantsProcess, formatToolResult, formatTurnEnd, formatRetry, formatRetryCircuitTripped, formatTasks, formatCwdGuide, formatRules, formatWorkspaceState } from './format.js'
+import { chunkText, markdownToHtml, formatToolCall, describeMedia, wantsProcess, formatToolResult, formatTurnEnd, formatRetry, formatRetryCircuitTripped, formatTasks, formatCwdGuide, formatRules, formatWorkspaceState, isProviderFailure, formatProviderFailure } from './format.js'
 import type { Verbosity, WorkspaceState } from './format.js'
 import { MatrixChannel } from './matrix.js'
 import type { Channel, InboundMessage, MediaBlock, RoomEvent } from './matrix.js'
@@ -322,6 +322,14 @@ export class AccountBridge {
    * turn/end 时随 toolNames 一并清理，避免内存增长。
    */
   private readonly retryCounts = new Map<string, number>()
+  /**
+   * LLM provider 降级标记：按房间记录「配置的 provider 不可用」。
+   * 一旦 turn/end 检测到 provider 类错误，就记下失败的 provider/model 并标记该房间；
+   * 后续消息直接回复友好提示（不再触发 agent 循环崩溃），直到：
+   *   - 用户修改了 provider/model 配置（handleMessage 时比对当前值），或
+   *   - 用户发送 /new 重置会话。
+   */
+  private readonly providerBroken = new Map<string, { provider: string; model: string; at: number }>()
   /**
    * 房间级 matrix 任务队列（数字分身收件箱）：别的同事发来的待审工作。
    * 内存镜像，与 state.matrixTasks 同步；数字分身模式下入站消息进此队列，
@@ -1357,6 +1365,21 @@ export class AccountBridge {
   }
 
   private async deliver(roomId: string, text: string, sender?: string, imageRefs?: ImageAttachmentRef[]): Promise<void> {
+    // LLM provider 健壮性降级：若该房间已标记「配置的 provider 不可用」且配置未变，
+    // 直接回复友好提示，不再触发 agent 循环（避免每次消息都崩溃/烧 token）。
+    // 用户修改 provider/model 配置或发送 /new 后自动恢复。
+    const broken = this.providerBroken.get(roomId)
+    if (broken !== undefined) {
+      const sameProvider = this.agentOptions.provider === (broken.provider || undefined)
+      const sameModel = this.agentOptions.model === (broken.model || undefined)
+      if (sameProvider && sameModel) {
+        this.ctx.logger.info('[dsh-matrix-agent] provider broken, skip agent room=%s (provider=%s model=%s)', roomId, broken.provider, broken.model)
+        void this.safeSend(roomId, formatProviderFailure(broken.provider, broken.model), undefined)
+        return
+      }
+      // 配置已变化（用户改了 provider/model）：清除降级标记，恢复正常流程。
+      this.providerBroken.delete(roomId)
+    }
     const agent = await this.getRoomAgent(roomId)
     // 群聊上下文：群名+人数+身份一行前缀，避免 agent 误把群消息当私聊对话。
     // 仅注入房间标签（约 1 行）；完整群聊历史已改由 matrix_get_recent_messages 工具按需获取。
@@ -1755,6 +1778,8 @@ export class AccountBridge {
         break
       case '/new':
       case '/clear':
+        // 用户主动重置会话：清除 provider 降级标记（配置若已修正则恢复；未修正则下次错误时重新标记）。
+        this.providerBroken.delete(roomId)
         await this.releaseRoom(roomId)
         await reply('已开始全新会话。')
         break
@@ -1950,7 +1975,18 @@ export class AccountBridge {
          const msg = formatTurnEnd(reason)
          if (msg !== undefined) {
            this.ctx.logger.warn('[dsh-matrix-agent] turn/end not completed: %s', reason.kind)
-           void this.safeSend(roomId, msg, undefined)
+           // LLM provider 健壮性降级：识别「配置的 provider 不可用」类错误，
+           // 标记该房间并回复友好中文提示（替代原始英文堆栈），避免用户反复触发崩溃。
+           const errMessage = (reason.error?.message ?? '') as string
+           const provider = this.agentOptions.provider
+           const model = this.agentOptions.model
+           if (isProviderFailure(errMessage, provider, model)) {
+             this.providerBroken.set(roomId, { provider: provider ?? '', model: model ?? '', at: Date.now() })
+             this.ctx.logger.warn('[dsh-matrix-agent] provider failure detected room=%s provider=%s model=%s msg=%s', roomId, provider ?? '(none)', model ?? '(none)', errMessage)
+             void this.safeSend(roomId, formatProviderFailure(provider, model), undefined)
+           } else {
+             void this.safeSend(roomId, msg, undefined)
+           }
          }
          for (const key of this.toolNames.keys()) {
            if (key.startsWith(`${roomId}:`)) this.toolNames.delete(key)

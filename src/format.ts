@@ -343,3 +343,66 @@ export function formatRules(rules: readonly AllowDenyRule[]): string {
   })
   return lines.join('\n')
 }
+
+// ===================== LLM provider 健壮性（配置错误优雅降级） =====================
+
+/**
+ * 判断一次模型请求失败是否属于「配置的 provider 不可用」类错误。
+ * 这类错误应当降级为友好提示，而不是让用户看到英文堆栈。
+ *
+ * 覆盖的形态（跨 harness 版本保守匹配，均为小写包含判断）：
+ * - pi-ai 适配器未注册：`no adapter registered for provider "X"` / `NO_ADAPTER`
+ * - 适配器对象缺失导致读属性崩溃：`reading 'prepare'`、`reading 'stream'`
+ * - agent 没有 provider/model：`has no provider/model`
+ * - 模型不存在 / 路由无法解析：`unknown provider`、`no such model`、`model not found`
+ * - 凭证缺失：`api key`、`missing credential`、`unauthorized`（弱匹配，仅当消息同时含 provider/model 字样）
+ */
+export function isProviderFailure(message: string, provider?: string, model?: string): boolean {
+  const m = (message ?? '').toLowerCase()
+  const haystack = `${m} ${provider ?? ''} ${model ?? ''}`.toLowerCase()
+  const adapters: Array<[RegExp, boolean]> = [
+    [/no[ _-]?adapter/i, false],
+    [/has no provider\/model/i, false],
+    [/reading '(prepare|stream)'/i, false],
+    [/unknown provider/i, false],
+    [/no such model/i, false],
+    [/model[^.]*not found/i, false],
+    [/not a registered provider/i, false],
+    [/unknown provider/i, false],
+    [/provider .* not (found|registered|supported|available)/i, false],
+    [/invalid provider/i, false],
+    [/missing credential/i, true],
+    [/api[ _-]?key/i, true],
+    [/credential/i, true],
+    [/unauthorized/i, true],
+  ]
+  for (const [pattern, needsIdentity] of adapters) {
+    if (!pattern.test(haystack)) continue
+    // 弱匹配形态要求消息里确实出现配置的 provider/model，避免把其它错误误判为 provider 问题。
+    if (needsIdentity) {
+      const hasProvider = provider !== undefined && provider !== '' && m.includes(provider.toLowerCase())
+      const hasModel = model !== undefined && model !== '' && m.includes(model.toLowerCase())
+      if (!hasProvider && !hasModel) continue
+    }
+    return true
+  }
+  return false
+}
+
+/**
+ * 生成「LLM provider 不可用」的友好提示（纯文本，替代原始英文错误）。
+ * 告知用户当前配置值，并引导在设置页选择可用 provider；同时给出回退建议。
+ */
+export function formatProviderFailure(provider?: string, model?: string): string {
+  const lines: string[] = []
+  lines.push('⚠️ 当前配置的 LLM 模型不可用，本次未能回复。')
+  if (provider !== undefined && provider !== '') lines.push(`  配置的 provider：\`${provider}\``)
+  if (model !== undefined && model !== '') lines.push(`  配置的 model：\`${model}\``)
+  lines.push('')
+  lines.push('可能原因：该 provider 未安装适配器、模型 id 不存在、或缺少 API 凭证。')
+  lines.push('请到「设置 → 模型」选择一个可用的 provider 和 model（如 codebuddy / volces / sharkai），')
+  lines.push('保存后重新发送消息即可。')
+  lines.push('')
+  lines.push('（发送 `/new` 可重置本房间会话后重试）')
+  return lines.join('\n')
+}
