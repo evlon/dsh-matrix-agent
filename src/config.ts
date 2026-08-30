@@ -152,6 +152,10 @@ export interface Config {
   /** 房间名前缀匹配即启用秘书编排（任务入队/开工请示/交付确认），即使 digitalTwinMode=false。
    * 用于「只给测试房间开秘书编排」（测试房间名带此前缀）。默认 ''，空=不启用。 */
   twinModeRoomPrefix: string
+  /** 群聊默认启用秘书编排：Matrix 群聊消息（非私聊）默认进任务队列待 owner 审核/请示/确认，
+   * 无需 digitalTwinMode 或 twinModeRoomPrefix。私聊保持直接回复。默认 true。
+   * 显式配置 digitalTwinMode=true 或 twinModeRoomPrefix 匹配时始终优先。 */
+  secretaryGroupDefault: boolean
 
   // ========== 秘书编排（角色化会话 + 开工请示 + 交付确认） ==========
   /** 房间 → 灵魂预设 id 的固定角色映射（如 { '!room:hs': 'dev' }）。默认空（百变员工）。 */
@@ -238,6 +242,7 @@ export const Config: Schema<Config> = Schema.object({
 
   testRoomPrefix: Schema.string().default('【测试】'),
   twinModeRoomPrefix: Schema.string().default(''),
+  secretaryGroupDefault: Schema.boolean().default(true),
 
   roomRoles: Schema.dict(Schema.string()).default({}),
   taskClarifyBeforeStart: Schema.boolean().default(true),

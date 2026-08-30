@@ -192,6 +192,17 @@ test('multi-account + owner auth: twin approval, auth commands, routing', async 
     assert.ok(twinMsg, 'twin should have been the only responder')
     captured.messages.length = 0
 
+    // 2.5) 分身群聊默认秘书：未 @ 提及的群聊消息进任务队列（不直接注入 agent 回复）
+    hs.deliver([textEvent('$t2', '帮我整理一下明天的会议纪要', SENDER)])
+    await waitFor(() => hs.sends.some((s) => s.body.body?.includes('新任务已入队')), 'twin group message queued as secretary task')
+    assert.equal(captured.messages.length, 0, 'no direct agent injection for unmentioned group message')
+    const queued = hs.sends.find((s) => s.body.body?.includes('新任务已入队'))
+    assert.ok(queued.body.body.includes('帮我整理一下明天的会议纪要'), 'queued task shows the original text')
+    // 清理：拒绝该任务，避免影响后续断言
+    hs.deliver([textEvent('$t3', '/reject 1', OWNER_ID)])
+    await waitFor(() => hs.sends.some((s) => s.body.body?.includes('已拒绝')), 'owner rejects queued task')
+    hs.sends.length = 0
+
     // 3) 分身工具请求 → 房间推送审批
     const twinAgentId = captured.agents[1].agent.id
     const req = { agent: { id: twinAgentId }, toolName: 'bash', reason: 'run cmd', signal: undefined }

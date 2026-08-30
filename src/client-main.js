@@ -437,6 +437,7 @@ function SocialTab(props) {
     React.createElement(SwitchField, { label: '记住成员（memberMemory）', value: form.memberMemory, onChange: set('memberMemory'), hint: '记住每个房间里见过的成员（含其他数字人），/memory 查看' }),
     React.createElement(SwitchField, { label: '新成员入群主动打招呼（autoGreet）', value: form.autoGreet, onChange: set('autoGreet'), hint: '新成员（含其他数字人）入群时提示分身主动了解对方' }),
     React.createElement(TextField, { label: '测试房间前缀（testRoomPrefix）', value: form.testRoomPrefix, onChange: set('testRoomPrefix'), hint: '房间名含此前缀视为测试环境：分身每次回复都会被提示「请勿真实执行任务/修改文件/发真实消息」。留空关闭' }),
+    React.createElement(SwitchField, { label: '群聊默认启用秘书编排（secretaryGroupDefault）', value: form.secretaryGroupDefault, onChange: set('secretaryGroupDefault'), hint: 'Matrix 群聊消息默认进任务队列待 owner 审核/请示/确认；私聊保持直接回复。关闭后仅 digitalTwinMode 或前缀匹配的房间启用' }),
     React.createElement(SaveBar, { onSave: save, saved, onReset: () => reset('social') }))
 }
 
@@ -472,6 +473,8 @@ const FORM_DEFAULTS = {
   selfIntroTemplate: '大家好，我是 {{userId}}，很高兴加入这个群。以后有什么需要帮忙的尽管找我，我会尽力配合大家的工作！',
   // 测试环境。
   testRoomPrefix: '【测试】',
+  // 群聊默认秘书编排。
+  secretaryGroupDefault: true,
 }
 
 /** 把 settings 的 soul 子对象展开到顶层 form（form.persona/style/... 直接可读写），
@@ -545,7 +548,7 @@ function MatrixSettingsPage(props) {
   const TAB_FIELDS = {
     soul: ['soul'], // 灵魂为嵌套对象，重置时 unset 整个 soul。
     account: ['homeserverUrl', 'userId', 'accessToken', 'owner', 'respondToAll', 'allowAllUsers', 'allowedUserIds', 'provider', 'model', 'agentPreset', 'chunkMaxChars', 'proactiveSendRequiresApproval', 'preserveRichText'],
-    social: ['autoIntroduce', 'maxSelfIntroMentions', 'memberMemory', 'autoGreet', 'selfIntroTemplate', 'testRoomPrefix'],
+    social: ['autoIntroduce', 'maxSelfIntroMentions', 'memberMemory', 'autoGreet', 'selfIntroTemplate', 'testRoomPrefix', 'secretaryGroupDefault'],
   }
   // 重置某 tab：清除 settings 用户层对应字段（回继承默认），并同步前端 form。
   const resetTab = (tabId) => {

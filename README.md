@@ -207,6 +207,7 @@ allowBuilds:
 | `soul.replyLength` | `'short'` | 回复长度偏好：`short`/`normal`/`detailed` |
 | `testRoomPrefix` | `'【测试】'` | 房间名前缀匹配即视为测试房间，给数字人注入测试声明（「当前是测试环境，请勿真实执行任务/修改文件/向真实用户发送消息」）；空=关闭 |
 | `twinModeRoomPrefix` | `''` | 房间名前缀匹配即启用秘书编排（任务入队/开工请示/交付确认），即使 `digitalTwinMode=false`；用于「只给测试房间开秘书编排」；空=不启用 |
+| `secretaryGroupDefault` | `true` | **群聊默认启用秘书编排**：Matrix 群聊消息（非私聊）默认进任务队列待 owner 审核/请示/确认，无需 `digitalTwinMode` 或前缀；私聊保持直接回复。设为 `false` 关闭群聊默认（此时仅 `digitalTwinMode=true` 或前缀匹配才启用） |
 | `roomRoles` | `{}` | 房间 → 灵魂预设 id 的固定角色映射（如 `{ '!room:hs': 'dev' }`）；未配置用百变员工 |
 | `taskClarifyBeforeStart` | `true` | 开工前是否私下 DM 老板请示要求/优先级；超时按原任务开工 |
 | `taskClarifyTimeoutSecs` | `120` | 开工请示等待秒数 |

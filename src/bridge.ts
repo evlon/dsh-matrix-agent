@@ -560,6 +560,15 @@ export class AccountBridge {
       this.diag.log('  -> group-respondToAll-branch: respond=true')
       return true
     }
+    // 群聊默认秘书（分身账号）：未 @ 的群聊消息也放行进后续流程（由 isTwinMode 决定
+    // 是否进任务队列；私聊或 @ 提及仍按原逻辑）。避免工作任务被 shouldRespond 提前过滤。
+    if (this.config.secretaryGroupDefault !== false && !this.isMain) {
+      const dm = this.channel.isDirectRoom ? await this.channel.isDirectRoom(message.roomId) : false
+      if (!dm) {
+        this.diag.log('  -> group-secretary-branch: respond=true (queue gate)')
+        return true
+      }
+    }
     this.diag.log('  -> group-silent-branch: respond=false')
     return false
   }
@@ -1271,10 +1280,11 @@ export class AccountBridge {
         return
       }
 
-      // 数字分身模式（或按房间启用的秘书编排）：同事/主管发来的工作进 matrix 任务队列待审，不直接执行。
+      // 秘书编排（任务入队/请示/确认）：同事/主管发来的工作进 matrix 任务队列待审，不直接执行。
       // 机器人自己账号发出的消息（如有）不进队列；命令已在上方处理。
       // 入队用 stripped（已剥 @提及 前缀）：任务面板与注入 agent 的文本不带原始提及标记。
-      if (await this.isTwinMode(message.roomId) && message.sender !== this.userId) {
+      // 群聊默认秘书：未 @ 提及本账号的群聊消息按工作任务入队（@ 提及自己的即时交流仍直接回复）。
+      if (await this.isTwinMode(message.roomId, message) && message.sender !== this.userId) {
         await this.enqueueTask(message.roomId, message.sender, stripped)
         return
       }
@@ -1328,17 +1338,44 @@ export class AccountBridge {
    * 绝不注入成员名单——大群也不会放大 token。群名/人数均走带缓存的接口。
    */
   /** 该房间是否启用秘书编排（任务入队/请示/确认）：
-   * 全局 digitalTwinMode=true，或房间名匹配 twinModeRoomPrefix（按房间开，如测试房间）。 */
-  private async isTwinMode(roomId: string): Promise<boolean> {
+   * - 全局 digitalTwinMode=true → 全部启用（含 @ 提及，除非消息被 @ 自己的即时交流？——digitalTwinMode 显式开启时不豁免）；
+   * - 房间名匹配 twinModeRoomPrefix → 该房间启用（如测试房间）；
+   * - 群聊默认秘书（secretaryGroupDefault，默认 true）→ 非私聊房间启用；私聊保持直接回复。
+   * @param message 入站消息：群聊默认秘书时，@ 提及本账号的消息视为即时交流直接回复（不入队列）。 */
+  private async isTwinMode(roomId: string, message?: InboundMessage): Promise<boolean> {
     if (this.config.digitalTwinMode) return true
     const prefix = this.config.twinModeRoomPrefix
-    if (prefix === '') return false
-    try {
-      const name = this.channel.getRoomName ? await this.channel.getRoomName(roomId) : undefined
-      return name !== undefined && name.includes(prefix)
-    } catch {
-      return false
+    if (prefix !== '') {
+      try {
+        const name = this.channel.getRoomName ? await this.channel.getRoomName(roomId) : undefined
+        if (name !== undefined && name.includes(prefix)) return true
+      } catch {
+        // 房间名获取失败：回落到群聊默认判断，不阻断秘书功能。
+      }
     }
+    // 群聊默认启用秘书编排（仅数字分身账号，即非主账号）：私聊不启用（保持直接对话）；
+    // 主账号个人助手（isMain=true，值班响应）保持直接回复，除非显式配置 digitalTwinMode 或前缀匹配。
+    if (this.config.secretaryGroupDefault !== false && !this.isMain) {
+      const isDm = this.channel.isDirectRoom ? await this.channel.isDirectRoom(roomId) : false
+      if (isDm) return false
+      // @ 提及本账号的消息：视为即时交流，直接回复（不进任务队列）。
+      if (message !== undefined && this.isMentioningSelf(message)) return false
+      return true
+    }
+    return false
+  }
+
+  /** 消息是否 @ 提及了本账号（用于群聊默认秘书时区分即时交流与工作任务）。 */
+  private isMentioningSelf(message: InboundMessage): boolean {
+    const lower = message.text.toLowerCase()
+    const ids = [this.userId, `@${localpartOf(this.userId)}`]
+    for (const id of ids) {
+      if (id !== '' && lower.includes(id.toLowerCase())) return true
+    }
+    // 兼容 '名字: / 名字：' 渲染（无 @ 无域名）。
+    const lp = localpartOf(this.userId).toLowerCase()
+    if (lp !== '' && new RegExp(`(^|\\s)${escapeRegExp(lp)}[:：]`).test(lower)) return true
+    return false
   }
 
   private async roomContextLabel(roomId: string): Promise<string> {
