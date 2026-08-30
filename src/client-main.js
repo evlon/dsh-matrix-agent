@@ -22,6 +22,13 @@
 
 import React from 'react'
 
+/**
+ * 插件版本号：由 scripts/build-client.mjs 在构建时注入（esbuild define），
+ * 浏览器端无法读 package.json，故在构建期固化为常量。未注入时回退 'dev'。
+ * 用于设置页等 UI 展示当前安装/运行的插件版本。
+ */
+const PLUGIN_VERSION = typeof __PLUGIN_VERSION__ !== 'undefined' ? __PLUGIN_VERSION__ : 'dev'
+
 /** Required services (cordis fiber inject). */
 export const inject = ['slots', 'settingsScope', 'connection', 'locale']
 
@@ -437,7 +444,8 @@ function SocialTab(props) {
     React.createElement(SwitchField, { label: '记住成员（memberMemory）', value: form.memberMemory, onChange: set('memberMemory'), hint: '记住每个房间里见过的成员（含其他数字人），/memory 查看' }),
     React.createElement(SwitchField, { label: '新成员入群主动打招呼（autoGreet）', value: form.autoGreet, onChange: set('autoGreet'), hint: '新成员（含其他数字人）入群时提示分身主动了解对方' }),
     React.createElement(TextField, { label: '测试房间前缀（testRoomPrefix）', value: form.testRoomPrefix, onChange: set('testRoomPrefix'), hint: '房间名含此前缀视为测试环境：分身每次回复都会被提示「请勿真实执行任务/修改文件/发真实消息」。留空关闭' }),
-    React.createElement(SwitchField, { label: '群聊默认启用秘书编排（secretaryGroupDefault）', value: form.secretaryGroupDefault, onChange: set('secretaryGroupDefault'), hint: 'Matrix 群聊消息默认进任务队列待 owner 审核/请示/确认；私聊保持直接回复。关闭后仅 digitalTwinMode 或前缀匹配的房间启用' }),
+    React.createElement(SwitchField, { label: '群聊默认启用秘书编排（secretaryGroupDefault）', value: form.secretaryGroupDefault, onChange: set('secretaryGroupDefault'), hint: 'Matrix 群聊消息默认进任务队列待 owner 审核/请示/确认；@ 提及自己的即时交流仍直接回复。关闭后仅 digitalTwinMode 或前缀匹配的房间启用' }),
+    React.createElement(SwitchField, { label: '私聊也启用秘书编排（secretaryDmDefault）', value: form.secretaryDmDefault, onChange: set('secretaryDmDefault'), hint: '默认关闭（私聊直接对话）；开启后数字分身的私聊消息也进任务队列待 owner 审核' }),
     React.createElement(SaveBar, { onSave: save, saved, onReset: () => reset('social') }))
 }
 
@@ -475,6 +483,8 @@ const FORM_DEFAULTS = {
   testRoomPrefix: '【测试】',
   // 群聊默认秘书编排。
   secretaryGroupDefault: true,
+  // 私聊默认秘书编排（默认关闭）。
+  secretaryDmDefault: false,
 }
 
 /** 把 settings 的 soul 子对象展开到顶层 form（form.persona/style/... 直接可读写），
@@ -548,7 +558,7 @@ function MatrixSettingsPage(props) {
   const TAB_FIELDS = {
     soul: ['soul'], // 灵魂为嵌套对象，重置时 unset 整个 soul。
     account: ['homeserverUrl', 'userId', 'accessToken', 'owner', 'respondToAll', 'allowAllUsers', 'allowedUserIds', 'provider', 'model', 'agentPreset', 'chunkMaxChars', 'proactiveSendRequiresApproval', 'preserveRichText'],
-    social: ['autoIntroduce', 'maxSelfIntroMentions', 'memberMemory', 'autoGreet', 'selfIntroTemplate', 'testRoomPrefix', 'secretaryGroupDefault'],
+    social: ['autoIntroduce', 'maxSelfIntroMentions', 'memberMemory', 'autoGreet', 'selfIntroTemplate', 'testRoomPrefix', 'secretaryGroupDefault', 'secretaryDmDefault'],
   }
   // 重置某 tab：清除 settings 用户层对应字段（回继承默认），并同步前端 form。
   const resetTab = (tabId) => {
@@ -586,7 +596,9 @@ function MatrixSettingsPage(props) {
   const tabProps = { scope, form, set, save, saved, conn, reset: resetTab, ...catalogs }
 
   return React.createElement('div', null,
-    React.createElement('h3', { style: { margin: '0 0 4px', color: 'var(--dsw-alias-label-primary)' } }, '数字分身'),
+    React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: '8px', marginBottom: '4px' } },
+      React.createElement('h3', { style: { margin: '0', color: 'var(--dsw-alias-label-primary)' } }, '数字分身'),
+      React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, `dsh-matrix-agent v${PLUGIN_VERSION}`)),
     React.createElement('div', { style: { display: 'flex', gap: '4px', marginBottom: '16px', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
       tabs.map((tab) =>
         React.createElement('button', {

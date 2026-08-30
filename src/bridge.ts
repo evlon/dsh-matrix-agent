@@ -1350,15 +1350,19 @@ export class AccountBridge {
         const name = this.channel.getRoomName ? await this.channel.getRoomName(roomId) : undefined
         if (name !== undefined && name.includes(prefix)) return true
       } catch {
-        // 房间名获取失败：回落到群聊默认判断，不阻断秘书功能。
+        // 房间名获取失败：回落到默认判断，不阻断秘书功能。
       }
     }
-    // 群聊默认启用秘书编排（仅数字分身账号，即非主账号）：私聊不启用（保持直接对话）；
-    // 主账号个人助手（isMain=true，值班响应）保持直接回复，除非显式配置 digitalTwinMode 或前缀匹配。
-    if (this.config.secretaryGroupDefault !== false && !this.isMain) {
-      const isDm = this.channel.isDirectRoom ? await this.channel.isDirectRoom(roomId) : false
-      if (isDm) return false
-      // @ 提及本账号的消息：视为即时交流，直接回复（不进任务队列）。
+    // 仅数字分身账号（非主账号）启用默认秘书；主账号个人助手（isMain=true）保持直接回复，
+    // 除非显式配置 digitalTwinMode 或前缀匹配（已在上面处理）。
+    if (this.isMain) return false
+    const isDm = this.channel.isDirectRoom ? await this.channel.isDirectRoom(roomId) : false
+    if (isDm) {
+      // 私聊：默认不启用秘书（直接对话）；secretaryDmDefault=true 时启用（所有私聊消息进队列待审）。
+      return this.config.secretaryDmDefault === true
+    }
+    // 群聊：secretaryGroupDefault 默认启用；@ 提及本账号的消息视为即时交流，直接回复（不进任务队列）。
+    if (this.config.secretaryGroupDefault !== false) {
       if (message !== undefined && this.isMentioningSelf(message)) return false
       return true
     }

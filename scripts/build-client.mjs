@@ -19,7 +19,7 @@
  * "loaded without registering" 并拒绝加载插件（等于整页插件区崩掉）。
  * 语法错误必须在 build 阶段就暴露，而不是等用户重启后才在浏览器里炸。
  */
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,6 +28,11 @@ import { build } from 'esbuild'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const entry = join(root, 'src', 'client-main.js')
 const dest = join(root, 'lib', 'client.js')
+
+// 从 package.json 读取版本号，构建时注入为 __PLUGIN_VERSION__ 常量，
+// 供设置页等 UI 展示（浏览器端无 fs，无法运行时读 package.json）。
+const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+const pluginVersion = typeof pkg.version === 'string' ? pkg.version : 'dev'
 
 const BANNER = `window.__ModuleLoader__.load({
   id: "dsh-matrix-agent",
@@ -48,6 +53,9 @@ const result = await build({
   platform: 'browser',
   target: ['es2020'],
   external: ['react'],
+  define: {
+    __PLUGIN_VERSION__: JSON.stringify(pluginVersion),
+  },
   write: false,
   minify: false,
   sourcemap: false,

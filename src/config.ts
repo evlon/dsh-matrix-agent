@@ -156,6 +156,9 @@ export interface Config {
    * 无需 digitalTwinMode 或 twinModeRoomPrefix。私聊保持直接回复。默认 true。
    * 显式配置 digitalTwinMode=true 或 twinModeRoomPrefix 匹配时始终优先。 */
   secretaryGroupDefault: boolean
+  /** 私聊默认启用秘书编排：设为 true 时，数字分身的私聊消息也进任务队列待 owner 审核。
+   * 默认 false（私聊保持直接对话）。仅对数字分身账号（非主账号）生效。 */
+  secretaryDmDefault: boolean
 
   // ========== 秘书编排（角色化会话 + 开工请示 + 交付确认） ==========
   /** 房间 → 灵魂预设 id 的固定角色映射（如 { '!room:hs': 'dev' }）。默认空（百变员工）。 */
@@ -243,6 +246,7 @@ export const Config: Schema<Config> = Schema.object({
   testRoomPrefix: Schema.string().default('【测试】'),
   twinModeRoomPrefix: Schema.string().default(''),
   secretaryGroupDefault: Schema.boolean().default(true),
+  secretaryDmDefault: Schema.boolean().default(false),
 
   roomRoles: Schema.dict(Schema.string()).default({}),
   taskClarifyBeforeStart: Schema.boolean().default(true),
