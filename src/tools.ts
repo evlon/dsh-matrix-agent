@@ -40,6 +40,7 @@ export const MATRIX_TOOL_NAMES = {
   SET_ROOM_CWD: 'matrix_set_room_cwd',
   REQUEST_OWNER_DECISION: 'matrix_request_owner_decision',
   REPORT_OWNER: 'matrix_report_owner',
+  LIST_WORKSPACE_FILES: 'matrix_list_workspace_files',
 } as const
 
 export type MatrixToolName = typeof MATRIX_TOOL_NAMES[keyof typeof MATRIX_TOOL_NAMES]
@@ -82,6 +83,11 @@ export interface MatrixToolDeps {
    * 原子工具：私下向主人汇报进度/结果。用于「先请示后交付」工作流的汇报环节。
    */
   reportOwner?: (roomId: string, summary: string) => Promise<{ roomId: string; sent: boolean }>
+  /**
+   * 原子工具：列出当前会话工作目录下的文件（相对名 + 是否目录）。
+   * agent 执行任务时据此发现原始数据文件（如 bugs-raw.md）并读取整理。
+   */
+  listWorkspaceFiles?: (roomId: string) => Promise<Array<{ name: string; kind: 'file' | 'dir' }>>
 }
 
 /** 根据显式 roomId 或当前 agent 绑定的房间，解析实际的 roomId。 */
@@ -805,6 +811,52 @@ function makeReportOwnerTool(deps: MatrixToolDeps) {
   })
 }
 
+/**
+ * 原子工具：列出当前会话工作目录下的文件。agent 据此发现原始数据文件并读取整理。
+ * 这是「去工作目录找数据」的最小原子动作。
+ */
+function makeListWorkspaceFilesTool(deps: MatrixToolDeps) {
+  return defineTool({
+    name: MATRIX_TOOL_NAMES.LIST_WORKSPACE_FILES,
+    description: '列出当前会话绑定的工作目录下的文件（文件名 + 类型）。执行任务前用它发现可读的原始数据文件（如 *.md、*.json、*.csv），再配合文件读取工具读取内容。',
+    parameters: {
+      roomId: {
+        type: 'string',
+        description: 'Matrix 房间 ID，可选；不传则使用当前会话绑定的房间',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        properties: {
+          roomId: { type: 'string' },
+          cwd: { type: 'string' },
+          files: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                kind: { type: 'string' },
+              },
+              additionalProperties: false,
+            },
+          },
+        },
+        additionalProperties: false,
+      } as const,
+      render: renderResult,
+    },
+    async execute(args, exec) {
+      const roomId = resolveRoomId(args, exec, deps)
+      if (deps.listWorkspaceFiles === undefined) throw new Error('工作目录文件列表服务不可用')
+      const files = await deps.listWorkspaceFiles(roomId)
+      return { roomId, files }
+    },
+  })
+}
+
 /** 将 Matrix 工具通过 ctx.tools.register() 注册到 ToolRuntime（全局 layer）。
  * 必须在 agent factory 的 `setup` 或 host apply 中由 plugin ctx 调用。
  * 注册后即对所有 agent 可见，模型既能看见 schema 也能直接调用执行体。
@@ -832,6 +884,7 @@ export function applyMatrixTools(ctx: Context, deps: MatrixToolDeps): void {
     makeSetRoomCwdTool(deps),
     makeRequestOwnerDecisionTool(deps),
     makeReportOwnerTool(deps),
+    makeListWorkspaceFilesTool(deps),
   ]
 
   for (const tool of tools) {

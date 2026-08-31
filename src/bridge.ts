@@ -10,7 +10,7 @@
 
 import { join, isAbsolute } from 'node:path'
 import { existsSync } from 'node:fs'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, writeFile, readdir } from 'node:fs/promises'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle, AgentOptions } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -477,6 +477,7 @@ export class AccountBridge {
         setRoomCwd: (roomId: string, cwd: string) => this.setRoomCwdAtomic(roomId, cwd),
         requestOwnerDecision: (roomId: string, question: string) => this.requestOwnerDecisionAtomic(roomId, question),
         reportOwner: (roomId: string, summary: string) => this.reportOwnerAtomic(roomId, summary),
+        listWorkspaceFiles: (roomId: string) => this.listWorkspaceFilesAtomic(roomId),
         queryTimeline: (filter) => {
           const f = filter as { roomId?: string; kind?: string; actor?: string; limit?: number; since?: number }
           const kinds: TimelineKind[] = ['reply', 'tool-call', 'proactive', 'self-intro', 'approval', 'task']
@@ -658,6 +659,20 @@ export class AccountBridge {
     } catch (error) {
       this.ctx.logger.warn('[dsh-matrix-agent] reportOwner DM failed: %s', messageOf(error))
       return { roomId, sent: false }
+    }
+  }
+
+  /** 原子工具：列出当前会话工作目录下的文件。 */
+  private async listWorkspaceFilesAtomic(roomId: string): Promise<Array<{ name: string; kind: 'file' | 'dir' }>> {
+    const cwd = this.state.roomCwd(roomId)
+    if (cwd === undefined || cwd === '' || !existsSync(cwd)) {
+      throw new Error(`工作目录未设定或不存在（${cwd ?? '(未设定)'}），先用 matrix_set_room_cwd 设定`)
+    }
+    try {
+      const entries = await readdir(cwd, { withFileTypes: true })
+      return entries.map((e) => ({ name: e.name, kind: e.isDirectory() ? 'dir' as const : 'file' as const }))
+    } catch (error) {
+      throw new Error(`读取工作目录失败：${messageOf(error)}`)
     }
   }
 
@@ -1600,8 +1615,26 @@ export class AccountBridge {
     return { state: 'bound', cwd }
   }
 
-  /** 把任务面板推给房间。有 owner（数字分身，请示需保密）时群内用对外视图；无 owner 保留待审明细。 */
+  /** 把任务进度推给房间。
+   *  - 有 owner（数字分身，请示需保密）：极简一行，避免刷完整面板、不暴露待审/老板。
+   *  - 无 owner（真人主助手，群内审核）：保留完整面板（待审/已批准是合理可见状态）。 */
   private async pushTasks(roomId: string): Promise<void> {
+    const hasOwner = this.owner !== undefined && this.owner !== ''
+    if (!hasOwner) {
+      await this.showTasksDetail(roomId)
+      return
+    }
+    const tasks = this.tasksOf(roomId)
+    const done = tasks.filter((t) => t.status === 'done' || t.status === 'rejected').length
+    const total = tasks.length
+    const text = total === 0
+      ? '📭 暂无任务。'
+      : `📋 任务进度：进行中 ${total - done} / 已完成 ${done} / 共 ${total}`
+    await this.safeSend(roomId, text, undefined)
+  }
+
+  /** 用户主动 /tasks 时展示完整任务面板（对外视图：不暴露待审/请示/老板）。 */
+  private async showTasksDetail(roomId: string): Promise<void> {
     const external = this.owner !== undefined && this.owner !== ''
     const text = formatTasks(this.tasksOf(roomId), this.workspaceStateOf(roomId), external)
     await this.safeSend(roomId, text, markdownToHtml(text))
@@ -1790,30 +1823,53 @@ export class AccountBridge {
     task.status = 'approved'
     this.runningTask.set(roomId, task.id)
     this.persistTasks(roomId)
-    const ctxPrompt = this.buildTaskPrompt(roomId, task)
+    const ctxPrompt = await this.buildTaskPrompt(roomId, task)
     await this.deliver(roomId, ctxPrompt, task.sender)
     await this.pushTasks(roomId)
   }
 
   /** 构造任务注入文本：秘书模式（owner 已配置）加角色 + 工作方式 + 老板指示；否则原样注入。 */
-  private buildTaskPrompt(roomId: string, task: MatrixTask): string {
+  private async buildTaskPrompt(roomId: string, task: MatrixTask): Promise<string> {
     const body = task.contextPrompt !== undefined ? `${task.contextPrompt}\n\n${task.text}` : task.text
     // 无 owner：非秘书模式，保持旧行为（直接任务内容）。
     if (this.owner === undefined) return body
     const role = this.roleForTask(roomId, task)
     const rolePersona = rolePersonaFor(role)
+    // 工作目录 + 文件清单：让 agent 知道「去哪读原始数据、把结果写哪、发给谁」。
+    const cwd = this.state.roomCwd(roomId)
+    let workspaceGuide = ''
+    if (cwd !== undefined && cwd !== '' && existsSync(cwd)) {
+      let fileList = ''
+      try {
+        const entries = await readdir(cwd, { withFileTypes: true })
+        const files = entries.filter((e) => e.isFile()).map((e) => e.name)
+        if (files.length > 0) {
+          fileList = files.map((f) => `- ${f}`).join('\n')
+        }
+      } catch {
+        fileList = ''
+      }
+      workspaceGuide = [
+        '【工作目录】',
+        `你的工作目录是：${cwd}`,
+        fileList !== ''
+          ? `目录下已有这些文件（可用 read_file / 文件工具读取后整理）：\n${fileList}`
+          : '目录下暂无文件，需要时可创建结果文件。',
+      ].join('\n')
+    }
     const workStyle = [
       '【工作方式】你是数字员工。',
       `老板是 ${this.owner}（真实人）。`,
       '- 开工前：若任务有歧义、需要优先级或资源，先私聊老板确认（matrix_send_dm 发给老板），再开工。',
-      '- 完成后：先私聊老板汇报结果并请求确认，老板确认后再在群里向同事交付。',
+      '- 执行中：去【工作目录】读取原始数据文件，整理成结果（可写结果文件到该目录，或直接在回复里给出）。',
+      '- 完成后：先私聊老板汇报结果并请求确认（matrix_report_owner），老板确认后再在群里向同事交付（matrix_send_room_message）。',
       '- 未经老板确认，不要直接在群里对外交付重要结果。',
     ].join('\n')
     const clarify = task.clarifyReply !== undefined && task.clarifyReply !== ''
       ? `\n【老板开工指示】${task.clarifyReply}`
       : ''
     const roleLine = `\n【本次任务角色】${role}：${rolePersona}`
-    return `${roleLine}\n${workStyle}\n\n【任务内容】\n${body}${clarify}`
+    return `${roleLine}\n${workStyle}\n\n${workspaceGuide}\n\n【任务内容】\n${body}${clarify}`
   }
 
   /** 任务的执行角色：任务级 role > 房间固定角色 > 百变员工。 */
@@ -2107,7 +2163,7 @@ export class AccountBridge {
       }
       case '/tasks':
       case '/queue':
-        await this.pushTasks(roomId)
+        await this.showTasksDetail(roomId)
         break
       case '/approve': {
         if (arg === '') {
