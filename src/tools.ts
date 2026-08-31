@@ -37,6 +37,9 @@ export const MATRIX_TOOL_NAMES = {
   LIST_ROOMS: 'matrix_list_rooms',
   GET_MEDIA: 'matrix_get_media',
   TIMELINE: 'twin_timeline',
+  SET_ROOM_CWD: 'matrix_set_room_cwd',
+  REQUEST_OWNER_DECISION: 'matrix_request_owner_decision',
+  REPORT_OWNER: 'matrix_report_owner',
 } as const
 
 export type MatrixToolName = typeof MATRIX_TOOL_NAMES[keyof typeof MATRIX_TOOL_NAMES]
@@ -65,6 +68,20 @@ export interface MatrixToolDeps {
   queryTimeline?: (filter: { roomId?: string; kind?: string; actor?: string; limit?: number; since?: number }) => Array<{
     id: string; ts: number; roomId: string; kind: string; actor?: string; tool?: string; target?: string; charCount?: number; sessionId?: string
   }>
+  /**
+   * 原子工具：把房间/会话绑定到工作目录（绝对路径）。校验存在性；失败抛错。
+   * 这是「工作目录如何确定」的最小原子动作——具体策略（经验/协商）由技能/记忆层组合。
+   */
+  setRoomCwd?: (roomId: string, cwd: string) => Promise<void>
+  /**
+   * 原子工具：私下向主人（owner）发起一次请示/决策请求。返回是否送达与私聊房 id。
+   * 正文由桥接层补全「群名/发起人/内容」上下文；「何时请示、问什么」由技能层决定。
+   */
+  requestOwnerDecision?: (roomId: string, question: string) => Promise<{ roomId: string; sent: boolean }>
+  /**
+   * 原子工具：私下向主人汇报进度/结果。用于「先请示后交付」工作流的汇报环节。
+   */
+  reportOwner?: (roomId: string, summary: string) => Promise<{ roomId: string; sent: boolean }>
 }
 
 /** 根据显式 roomId 或当前 agent 绑定的房间，解析实际的 roomId。 */
@@ -666,6 +683,128 @@ function makeTimelineTool(deps: MatrixToolDeps) {
   })
 }
 
+/**
+ * 原子工具：把房间绑定到工作目录（绝对路径）。
+ * 这是「工作目录如何确定」的最小动作——具体策略（秘书经验/主人协商/角色映射）
+ * 由技能（skill）与记忆（memory）层组合，插件只提供这个可组合的原语。
+ */
+function makeSetRoomCwdTool(deps: MatrixToolDeps) {
+  return defineTool({
+    name: MATRIX_TOOL_NAMES.SET_ROOM_CWD,
+    description: '把当前会话绑定的 Matrix 房间设定到指定工作目录（绝对路径）。用于在执行任务前确定工作目录；具体选哪个目录由你的工作流/记忆决定。目录必须存在。',
+    parameters: {
+      roomId: {
+        type: 'string',
+        description: 'Matrix 房间 ID，可选；不传则使用当前会话绑定的房间',
+      },
+      cwd: {
+        type: 'string',
+        required: true,
+        description: '工作目录的绝对路径，如 E:/workspace/project',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean', required: true },
+          roomId: { type: 'string' },
+          cwd: { type: 'string' },
+        },
+        additionalProperties: false,
+      } as const,
+      render: renderResult,
+    },
+    async execute(args, exec) {
+      const roomId = resolveRoomId(args, exec, deps)
+      const cwd = args.cwd
+      if (typeof cwd !== 'string' || cwd.trim() === '') throw new Error('cwd 必须是绝对路径字符串')
+      if (deps.setRoomCwd === undefined) throw new Error('工作目录设定服务不可用')
+      await deps.setRoomCwd(roomId, cwd.trim())
+      return { ok: true, roomId, cwd: cwd.trim() }
+    },
+  })
+}
+
+/**
+ * 原子工具：私下向主人（owner）发起一次请示/决策请求。
+ * 桥接层自动补全「群名/发起人/工作内容」上下文。何时请示、问什么由技能层决定。
+ */
+function makeRequestOwnerDecisionTool(deps: MatrixToolDeps) {
+  return defineTool({
+    name: MATRIX_TOOL_NAMES.REQUEST_OWNER_DECISION,
+    description: '私下向主人（owner）发起一次请示，请求其决策/批准/补充要求。用于需要主人拍板的事项（如工作目录、任务优先级、是否开工）。请示内容会私下送达主人，不会在群里暴露。',
+    parameters: {
+      roomId: {
+        type: 'string',
+        description: 'Matrix 房间 ID，可选；不传则使用当前会话绑定的房间',
+      },
+      question: {
+        type: 'string',
+        required: true,
+        description: '要向主人请示的问题或事项，尽量说清楚',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        properties: {
+          sent: { type: 'boolean', required: true },
+          roomId: { type: 'string' },
+        },
+        additionalProperties: false,
+      } as const,
+      render: renderResult,
+    },
+    async execute(args, exec) {
+      const roomId = resolveRoomId(args, exec, deps)
+      const question = args.question
+      if (typeof question !== 'string' || question.trim() === '') throw new Error('question 不能为空')
+      if (deps.requestOwnerDecision === undefined) throw new Error('主人请示服务不可用')
+      return deps.requestOwnerDecision(roomId, question.trim())
+    },
+  })
+}
+
+/**
+ * 原子工具：私下向主人汇报进度/结果。用于「先请示后交付」工作流的汇报环节。
+ */
+function makeReportOwnerTool(deps: MatrixToolDeps) {
+  return defineTool({
+    name: MATRIX_TOOL_NAMES.REPORT_OWNER,
+    description: '私下向主人（owner）汇报任务进度或结果。用于完成任务后、对外交付前向主人汇报。汇报内容私下送达主人，不会在群里暴露。',
+    parameters: {
+      roomId: {
+        type: 'string',
+        description: 'Matrix 房间 ID，可选；不传则使用当前会话绑定的房间',
+      },
+      summary: {
+        type: 'string',
+        required: true,
+        description: '要汇报的进度或结果摘要',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        properties: {
+          sent: { type: 'boolean', required: true },
+          roomId: { type: 'string' },
+        },
+        additionalProperties: false,
+      } as const,
+      render: renderResult,
+    },
+    async execute(args, exec) {
+      const roomId = resolveRoomId(args, exec, deps)
+      const summary = args.summary
+      if (typeof summary !== 'string' || summary.trim() === '') throw new Error('summary 不能为空')
+      if (deps.reportOwner === undefined) throw new Error('主人汇报服务不可用')
+      return deps.reportOwner(roomId, summary.trim())
+    },
+  })
+}
+
 /** 将 Matrix 工具通过 ctx.tools.register() 注册到 ToolRuntime（全局 layer）。
  * 必须在 agent factory 的 `setup` 或 host apply 中由 plugin ctx 调用。
  * 注册后即对所有 agent 可见，模型既能看见 schema 也能直接调用执行体。
@@ -690,6 +829,9 @@ export function applyMatrixTools(ctx: Context, deps: MatrixToolDeps): void {
     makeListRoomsTool(deps),
     makeGetMediaTool(deps),
     makeTimelineTool(deps),
+    makeSetRoomCwdTool(deps),
+    makeRequestOwnerDecisionTool(deps),
+    makeReportOwnerTool(deps),
   ]
 
   for (const tool of tools) {

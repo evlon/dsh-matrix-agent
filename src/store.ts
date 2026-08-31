@@ -57,6 +57,8 @@ interface StateFile {
   syncToken?: string
   /** 房间已选定的工作目录（新房间授权后写入）。 */
   roomCwds?: Record<string, string>
+  /** 工作内容 → 目录的经验记忆（秘书对某类工作用哪个目录）。 */
+  matterCwds?: Record<string, string>
   /** 房间级 matrix 任务队列（重启不丢）。 */
   matrixTasks?: Record<string, MatrixTask[]>
   /** 房间会话代数：每次 /clear 或检测到损坏历史时 +1，用于生成全新确定性会话 id。 */
@@ -104,6 +106,7 @@ export class BridgeState {
           processedEventIds: Array.isArray(parsed.processedEventIds) ? parsed.processedEventIds.slice(-DEDUP_CAP) : [],
           ...(typeof parsed.syncToken === 'string' ? { syncToken: parsed.syncToken } : {}),
           ...(typeof parsed.roomCwds === 'object' && parsed.roomCwds !== null && !nsChanged ? { roomCwds: parsed.roomCwds as Record<string, string> } : {}),
+          ...(typeof parsed.matterCwds === 'object' && parsed.matterCwds !== null && !nsChanged ? { matterCwds: parsed.matterCwds as Record<string, string> } : {}),
           ...(typeof parsed.matrixTasks === 'object' && parsed.matrixTasks !== null ? { matrixTasks: parsed.matrixTasks as Record<string, MatrixTask[]> } : {}),
           ...(typeof parsed.roomSessionEpochs === 'object' && parsed.roomSessionEpochs !== null && !nsChanged ? { roomSessionEpochs: parsed.roomSessionEpochs as Record<string, number> } : {}),
         }
@@ -177,6 +180,22 @@ export class BridgeState {
   setRoomCwd(roomId: string, cwd: string): void {
     if (!this.data.roomCwds) this.data.roomCwds = {}
     this.data.roomCwds[roomId] = cwd
+    this.scheduleSave()
+  }
+
+  // ---- 工作内容 → 目录的经验记忆（秘书凭经验判断目录） ----
+
+  /** 某类工作（classifyMatter 关键词）历史用过的目录。 */
+  matterCwd(matter: string): string | undefined {
+    if (matter === '' || matter === '*') return undefined
+    return this.data.matterCwds?.[matter]
+  }
+
+  /** 记录某类工作用哪个目录（沉淀秘书经验）。 */
+  setMatterCwd(matter: string, cwd: string): void {
+    if (matter === '' || matter === '*') return
+    if (!this.data.matterCwds) this.data.matterCwds = {}
+    this.data.matterCwds[matter] = cwd
     this.scheduleSave()
   }
 

@@ -282,6 +282,16 @@ const TASK_STATUS_LABEL: Record<MatrixTask['status'], string> = {
   confirming: '🔐 待确认',
 }
 
+/** 对外（群里）视图的状态词：不暴露「待审/请示中/待确认/老板」，只显示中性进度。 */
+const TASK_STATUS_LABEL_EXTERNAL: Record<MatrixTask['status'], string> = {
+  pending: '⏳ 排队中',
+  approved: '⚙️ 进行中',
+  rejected: '🚫 已取消',
+  done: '🏁 已完成',
+  clarifying: '⚙️ 进行中',
+  confirming: '⚙️ 进行中',
+}
+
 /** 工作目录状态文案。 */
 export type WorkspaceState = 'none' | 'bound' | 'missing'
 
@@ -299,28 +309,39 @@ export function formatWorkspaceState(state: WorkspaceState, cwd?: string): strin
 /**
  * 渲染房间 matrix 任务面板（纯文本，全 Matrix 客户端兼容）。
  * 列出待办/已办计数、每条序号+状态+发起人+摘要，以及工作目录状态。
+ * @param external 为 true 时是「发给群里」的对外视图：不暴露待审/请示中/待确认/老板，
+ *   只显示中性的「排队中/进行中/已完成」。
  */
 export function formatTasks(
   tasks: readonly MatrixTask[],
   workspace: { state: WorkspaceState; cwd?: string },
+  external = false,
 ): string {
   const lines: string[] = []
-  const pending = tasks.filter((t) => t.status === 'pending').length
   const doneCount = tasks.filter((t) => t.status === 'done' || t.status === 'rejected').length
-  lines.push(`📋 任务面板（待审 ${pending} / 已办 ${doneCount} / 共 ${tasks.length}）`)
+  const activeCount = tasks.length - doneCount
+  if (external) {
+    lines.push(`📋 任务进度（进行中 ${activeCount} / 已完成 ${doneCount} / 共 ${tasks.length}）`)
+  } else {
+    const pending = tasks.filter((t) => t.status === 'pending').length
+    lines.push(`📋 任务面板（待审 ${pending} / 已办 ${doneCount} / 共 ${tasks.length}）`)
+  }
   lines.push(formatWorkspaceState(workspace.state, workspace.cwd))
   if (tasks.length === 0) {
     lines.push('（暂无任务）')
     return lines.join('\n')
   }
+  const label = external ? TASK_STATUS_LABEL_EXTERNAL : TASK_STATUS_LABEL
   tasks.forEach((t, i) => {
-    const who = t.sender
+    const who = external ? '' : t.sender
     const snippet = t.text.length > 60 ? `${t.text.slice(0, 60)}…` : t.text
-    const note = t.note ? ` · ${t.note}` : ''
-    lines.push(`${i + 1}. ${TASK_STATUS_LABEL[t.status]} ${who}：${snippet}${note}`)
+    const note = external || t.note === undefined ? '' : ` · ${t.note}`
+    lines.push(`${i + 1}. ${label[t.status]}${who !== '' ? ` ${who}：` : ' '}${snippet}${note}`)
   })
-  lines.push('')
-  lines.push('命令：/queue 刷新 · /approve N 执行 · /reject N 拒绝 · /allow 人 事 / /deny 人 事')
+  if (!external) {
+    lines.push('')
+    lines.push('命令：/queue 刷新 · /approve N 执行 · /reject N 拒绝 · /allow 人 事 / /deny 人 事')
+  }
   return lines.join('\n')
 }
 

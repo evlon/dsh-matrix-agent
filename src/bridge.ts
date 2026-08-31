@@ -8,7 +8,7 @@
  * @module dsh-matrix-agent/bridge
  */
 
-import { join } from 'node:path'
+import { join, isAbsolute } from 'node:path'
 import { existsSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import type { Context } from '@deepseek-ai/cordis'
@@ -474,6 +474,9 @@ export class AccountBridge {
         approveProactiveSend: (toolName: string, args: Record<string, unknown>, exec: ToolRunContext) =>
           this.approveProactiveSend(toolName, args, exec),
         mediaDirForSession: (sessionId: string) => this.mediaDirForSession(sessionId),
+        setRoomCwd: (roomId: string, cwd: string) => this.setRoomCwdAtomic(roomId, cwd),
+        requestOwnerDecision: (roomId: string, question: string) => this.requestOwnerDecisionAtomic(roomId, question),
+        reportOwner: (roomId: string, summary: string) => this.reportOwnerAtomic(roomId, summary),
         queryTimeline: (filter) => {
           const f = filter as { roomId?: string; kind?: string; actor?: string; limit?: number; since?: number }
           const kinds: TimelineKind[] = ['reply', 'tool-call', 'proactive', 'self-intro', 'approval', 'task']
@@ -600,6 +603,62 @@ export class AccountBridge {
 
   roomForSession(sessionId: string): string | undefined {
     return this.state.sessionRoom(sessionId)
+  }
+
+  /**
+   * 原子工具：把房间绑定到工作目录（绝对路径，必须存在）。
+   * 同时回写「工作内容→目录」经验记忆（matterCwds），让秘书对同类工作形成记忆。
+   */
+  private async setRoomCwdAtomic(roomId: string, cwd: string): Promise<void> {
+    if (!isAbsolute(cwd)) throw new Error(`工作目录必须是绝对路径：${cwd}`)
+    if (!existsSync(cwd)) throw new Error(`工作目录不存在：${cwd}`)
+    this.state.setRoomCwd(roomId, cwd)
+    // 回写经验：把当前房间最近一条任务的工作内容（classifyMatter）映射到该目录。
+    const tasks = this.tasksOf(roomId)
+    const last = tasks[tasks.length - 1]
+    if (last !== undefined) {
+      const matter = this.classifyMatter(last.text)
+      if (matter !== '*' && matter !== '') this.state.setMatterCwd(matter, cwd)
+    }
+    this.ctx.logger.info('[dsh-matrix-agent] room %s cwd set to %s', roomId, cwd)
+  }
+
+  /** 拼接「群名/发起人」上下文，供请示/汇报 DM 用。 */
+  private async ownerDmContext(roomId: string, sender?: string): Promise<string> {
+    const name = this.channel.getRoomName ? await this.channel.getRoomName(roomId).catch(() => undefined) : undefined
+    const group = name !== undefined && name !== '' ? `群聊「${name}」` : `房间 ${roomId}`
+    const who = sender !== undefined && sender !== '' ? `发起人：${sender}` : '发起人：（未记录）'
+    return `${group}\n${who}`
+  }
+
+  /** 原子工具：私下向主人请示，返回是否送达与私聊房 id。 */
+  private async requestOwnerDecisionAtomic(roomId: string, question: string): Promise<{ roomId: string; sent: boolean }> {
+    if (this.owner === undefined || this.owner === '') throw new Error('未配置 owner，无法向主人请示')
+    const ctx = await this.ownerDmContext(roomId)
+    try {
+      const dm = await this.channel.sendDm?.(this.owner, `【任务请示】\n${ctx}\n\n${question}`)
+      if (dm === undefined) return { roomId, sent: false }
+      this.recordTimeline(dm.roomId, 'approval', { target: this.owner }, 0, 'secretary')
+      return { roomId: dm.roomId, sent: true }
+    } catch (error) {
+      this.ctx.logger.warn('[dsh-matrix-agent] requestOwnerDecision DM failed: %s', messageOf(error))
+      return { roomId, sent: false }
+    }
+  }
+
+  /** 原子工具：私下向主人汇报，返回是否送达与私聊房 id。 */
+  private async reportOwnerAtomic(roomId: string, summary: string): Promise<{ roomId: string; sent: boolean }> {
+    if (this.owner === undefined || this.owner === '') throw new Error('未配置 owner，无法向主人汇报')
+    const ctx = await this.ownerDmContext(roomId)
+    try {
+      const dm = await this.channel.sendDm?.(this.owner, `【进度汇报】\n${ctx}\n\n${summary}`)
+      if (dm === undefined) return { roomId, sent: false }
+      this.recordTimeline(dm.roomId, 'approval', { target: this.owner }, 0, 'secretary')
+      return { roomId: dm.roomId, sent: true }
+    } catch (error) {
+      this.ctx.logger.warn('[dsh-matrix-agent] reportOwner DM failed: %s', messageOf(error))
+      return { roomId, sent: false }
+    }
   }
 
   /**
@@ -1541,9 +1600,10 @@ export class AccountBridge {
     return { state: 'bound', cwd }
   }
 
-  /** 把一条待审任务推给房间（精简面板）。 */
+  /** 把任务面板推给房间。有 owner（数字分身，请示需保密）时群内用对外视图；无 owner 保留待审明细。 */
   private async pushTasks(roomId: string): Promise<void> {
-    const text = formatTasks(this.tasksOf(roomId), this.workspaceStateOf(roomId))
+    const external = this.owner !== undefined && this.owner !== ''
+    const text = formatTasks(this.tasksOf(roomId), this.workspaceStateOf(roomId), external)
     await this.safeSend(roomId, text, markdownToHtml(text))
   }
 
@@ -1607,7 +1667,9 @@ export class AccountBridge {
     }
     await this.safeSend(
       roomId,
-      `📥 新任务已入队（待审）：\n来自 ${sender}：${text}\n发送 /tasks 查看，/approve N 执行。`,
+      this.owner !== undefined && this.owner !== ''
+        ? '📥 收到，我来处理。'
+        : `📥 新任务已入队（待审）：\n来自 ${sender}：${text}\n发送 /tasks 查看，/approve N 执行。`,
       undefined,
     )
   }
@@ -1678,13 +1740,21 @@ export class AccountBridge {
     // 开工前请示：秘书私下问老板要求/优先级/范围；老板回复后注入执行，超时按原任务开始。
     if (this.config.taskClarifyBeforeStart && this.owner !== undefined && task.status !== 'clarifying') {
       const role = this.roleForTask(roomId, task)
+      const ctx = await this.ownerDmContext(roomId, task.sender)
+      // 建议目录：优先「工作内容→目录」经验记忆，其次候选首项。
+      const matter = this.classifyMatter(task.text)
+      const remembered = this.state.matterCwd(matter)
+      const suggested = remembered ?? (this.state.roomCwd(roomId) ?? (await this.cwdCandidatesFor(roomId))[0])
+      const cwdLine = suggested !== undefined && suggested !== ''
+        ? `建议工作目录：${suggested}\n（可直接回复目录路径，或回复「批准/用建议的」）`
+        : '工作目录：未定（请指定，或回复「批准」按默认）'
       // sendDm 可能因 homeserver 限流/502 失败：绝不让单条请示 DM 的失败导致整个
       // bridge 崩溃。失败时降级为「直接按原任务开工」（不阻塞任务执行）。
       let dm: { roomId: string; eventId?: string } | undefined
       try {
         dm = await this.channel.sendDm?.(
           this.owner,
-          `【任务请示】收到任务：\n${task.text}\n角色：${role}\n\n如果你有要求/优先级/范围补充，请回复；否则我将按任务原样开工。`,
+          `【任务请示】\n${ctx}\n工作内容：${task.text}\n角色：${role}\n${cwdLine}`,
         )
       } catch (error) {
         this.ctx.logger.warn('[dsh-matrix-agent] clarification DM to owner failed (%s); proceeding without clarification', messageOf(error))
@@ -1815,12 +1885,13 @@ export class AccountBridge {
   /** 交付前确认：秘书私下 DM 老板结果摘要，老板确认后交付回原房间，给意见则修订。 */
   private async confirmBeforeDeliver(roomId: string, task: MatrixTask): Promise<void> {
     const deliverTo = task.deliverTo ?? roomId
+    const ctx = await this.ownerDmContext(roomId, task.sender)
     // sendDm 可能因 homeserver 限流/502 失败：降级为「直接交付」，绝不让单条 DM 失败崩溃 bridge。
     let dm: { roomId: string; eventId?: string } | undefined
     try {
       dm = await this.channel.sendDm?.(
         this.owner!,
-        `【交付确认】任务完成：\n${task.text}\n\n完成情况：${task.result ?? '（已完成，结果见原房间）'}\n\n回复「交付」确认对外交付，或直接回复修改意见。`,
+        `【交付确认】\n${ctx}\n工作内容：${task.text}\n完成情况：${task.result ?? '（已完成，结果见原房间）'}\n\n回复「交付」确认对外交付，或直接回复修改意见。`,
       )
     } catch (error) {
       this.ctx.logger.warn('[dsh-matrix-agent] delivery-confirm DM to owner failed (%s); delivering directly', messageOf(error))
@@ -1840,7 +1911,7 @@ export class AccountBridge {
     task.ownerDmRoomId = dm.roomId
     task.deliverTo = deliverTo
     this.persistTasks(roomId)
-    await this.safeSend(roomId, '🔐 任务已完成，正在等老板确认后交付。', undefined, 'approval', undefined, 'secretary')
+    await this.safeSend(roomId, '🔧 正在整理结果，稍后交付。', undefined, 'approval', undefined, 'secretary')
     await this.pushTasks(roomId)
     // 超时处理。
     const timeout = this.config.taskConfirmTimeoutSecs ?? 600
@@ -1871,7 +1942,7 @@ export class AccountBridge {
     task.note = '老板已确认交付'
     this.persistTasks(roomId)
     const deliverTo = task.deliverTo ?? roomId
-    await this.safeSend(deliverTo, `✅ 任务完成（老板已确认）：\n${task.text}\n${task.result ?? ''}`, undefined, 'reply', undefined, 'secretary')
+    await this.safeSend(deliverTo, `✅ 任务完成：\n${task.text}\n${task.result ?? ''}`, undefined, 'reply', undefined, 'secretary')
     await this.pushTasks(roomId)
     await this.consumeNextTask(roomId)
   }
@@ -1892,15 +1963,31 @@ export class AccountBridge {
   private async handleOwnerDmReply(dmRoomId: string, task: MatrixTask, reply: string): Promise<void> {
     const workRoomId = task.roomId
     if (task.status === 'clarifying') {
+      // 主人答复一个目录路径（绝对路径）→ 设工作目录 + 回写经验，然后开工。
+      const trimmed = reply.trim()
+      const pathLike = /^(?:用|使用|目录|在|到)?\s*([A-Za-z]:[\\/][^\s]*|(?:\/|~)[^\s]*)$/.exec(trimmed)
+      if (pathLike !== null && pathLike[1] !== undefined) {
+        const candidate = pathLike[1].replace(/^~/, process.env.USERPROFILE ?? process.env.HOME ?? '')
+        if (isAbsolute(candidate) && existsSync(candidate)) {
+          this.state.setRoomCwd(workRoomId, candidate)
+          const matter = this.classifyMatter(task.text)
+          if (matter !== '*' && matter !== '') this.state.setMatterCwd(matter, candidate)
+          await this.safeSend(dmRoomId, `✅ 已设定工作目录：${candidate}，开始执行任务。`, undefined)
+          await this.startTaskExecution(workRoomId, task)
+          return
+        }
+        await this.safeSend(dmRoomId, `⚠️ 目录不存在或不是绝对路径：${candidate}，请重新指定。`, undefined)
+        return
+      }
       // 多轮确认：老板回「批准/开工/ok」→ 开工；否则记录指示，继续留在 clarifying（可继续补充）。
       const startWords = /^(批准|开工|开始|ok|可以|yes|go)$/i
-      if (startWords.test(reply.trim())) {
+      if (startWords.test(trimmed)) {
         await this.safeSend(dmRoomId, `✅ 已批准，开始执行任务。`, undefined)
         await this.startTaskExecution(workRoomId, task)
         return
       }
       // 记录指示，留在 clarifying（多轮：老板可继续给要求，直到批准开工）。
-      task.clarifyReply = reply.trim() !== '' ? reply.trim() : task.clarifyReply
+      task.clarifyReply = trimmed !== '' ? trimmed : task.clarifyReply
       task.status = 'clarifying'
       task.note = `老板指示（私聊）：${reply.slice(0, 40)}（可继续补充，或回复「批准」开工）`
       this.persistTasks(workRoomId)
