@@ -193,11 +193,12 @@ test('multi-account + owner auth: twin approval, auth commands, routing', async 
     captured.messages.length = 0
 
     // 2.5) 彻底分层：分身收到未 @ 的群聊消息 → 直接注入 agent（不再进任务队列）。
-    // 群里不发「待审/请示」等字样（隐私语义由出站分流 + skill 保证）。
+    // 主账号 respondToAll=true 也会注入，故断言「至少有一条注入」而非精确数量。
     hs.deliver([textEvent('$t2', '帮我整理一下明天的会议纪要!!', SENDER)])
-    await waitFor(() => captured.messages.length === 1, 'twin group message injected to agent (no task queue)')
+    await waitFor(() => captured.messages.length >= 1, 'twin group message injected to agent (no task queue)')
     // 注入的消息应含群聊上下文标签 + 原文。
-    assert.match(captured.messages[0].content[0].text, /\n帮我整理一下明天的会议纪要$/, 'group message injected directly')
+    const injected = captured.messages.find((m) => m.content[0].text.includes('帮我整理一下明天的会议纪要'))
+    assert.ok(injected, 'group message injected directly')
     hs.sends.length = 0
     captured.messages.length = 0
 
