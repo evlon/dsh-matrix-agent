@@ -1,4 +1,25 @@
 import Schema from '@deepseek-ai/schemastery'
+import { homedir } from 'node:os'
+import { isAbsolute, join } from 'node:path'
+
+/** 当前 dsh 实例的 home：显式 DSH_HOME，否则 ~/.dsh。 */
+function resolveDshHome(): string {
+  const base = process.env.DSH_HOME
+  return base !== undefined && base.trim() !== '' ? base.trim() : join(homedir(), '.dsh')
+}
+
+/**
+ * 把（可能是相对的）stateDir 解析为绝对路径，锚定到当前 dsh 实例的 DSH_HOME。
+ * 相对路径不再相对 cwd 解析——否则多个 dsh 实例在同一 cwd 运行时（开发者/测试者/使用者
+ * 共用同一工作目录，各自登录同一或不同分身账号）会写到同一个 state.json，互相覆盖
+ * syncToken / 去重环 / 房间↔会话绑定。绝对路径原样返回（允许显式指定独立位置）。
+ */
+export function resolveStateDir(stateDir: string): string {
+  const dir = (stateDir ?? '').trim()
+  if (dir === '') return join(resolveDshHome(), '.dsh-matrix')
+  if (isAbsolute(dir)) return dir
+  return join(resolveDshHome(), dir)
+}
 
 /** 数字分身 Matrix 账号：一个真实员工名下的一个分身，独立 access token 与 agent 会话空间。 */
 export interface DigitalTwinAccount {
@@ -73,6 +94,14 @@ export interface Config {
   approvalTimeoutSecs: number
   /** 桥接状态文件目录（房间↔会话映射、去重环、sync token、授权记录）。 */
   stateDir: string
+  /**
+   * 实例命名空间（会话隔离）：同一分身账号在多个 dsh 实例（不同端口/profile/DSH_HOME）运行时，
+   * 若会话 id 只由 userId+roomId 派生，会互相 resume 到对方历史。此值参与确定性会话 id 生成，
+   * 使不同 dsh 实例的 room agent 会话彼此隔离。显式非空时直接用其哈希；留空回退到
+   * process.env.DSH_HOME 的哈希（DSH_HOME 是每个实例的稳定身份锚，端口号可能漂移/随机）。
+   * DSH_HOME 也不存在时为空（保持旧的无命名空间 id，向后兼容）。改动需重启生效。
+   */
+  instanceKey: string
   /**
    * 重试熔断阈值：同一房间 turn 内 LLM 受限自动重试达到该次数时，插件主动
    * agent.cancel() 终止当前 turn 以止损（harness 的 always 模式无上限重试会持续烧 token）。
@@ -192,6 +221,7 @@ export const Config: Schema<Config> = Schema.object({
   mergeTimeoutSecs: Schema.number().default(5),
   approvalTimeoutSecs: Schema.number().default(300),
   stateDir: Schema.string().default('.dsh-matrix'),
+  instanceKey: Schema.string().default(''),
   maxRetriesBeforeAbort: Schema.number().default(5),
   retryCircuitBreakerEnabled: Schema.boolean().default(true),
 

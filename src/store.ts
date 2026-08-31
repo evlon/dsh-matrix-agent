@@ -48,6 +48,10 @@ interface AllowDenyFile {
 
 interface StateFile {
   version: 1
+  /** 会话命名空间（实例身份）：写入本文件的会话 id 所属的实例命名空间。
+   *  切换 dsh 实例（DSH_HOME/instanceKey 变化）时用于作废旧房间绑定，
+   *  避免跨实例 resume 到对方历史。旧文件无此字段（undefined）视为 legacy，保留绑定。 */
+  sessionNamespace?: string
   roomSessions: Record<string, RoomBinding>
   processedEventIds: string[]
   syncToken?: string
@@ -75,28 +79,43 @@ export class BridgeState {
   private saving: Promise<void> | undefined
   private allowDenySaving = false
 
+  /** 当前实例的会话命名空间（由 load 传入；未提供则视为无命名空间）。 */
+  private sessionNamespace: string | undefined
+
   constructor(private readonly filePath: string) {
     this.allowDenyPath = `${dirname(filePath)}/allow-deny.json`
   }
 
-  async load(): Promise<void> {
+  /** 读取状态文件；`namespace` 为当前实例身份，用于作废跨实例的旧房间绑定。 */
+  async load(namespace?: string): Promise<void> {
+    this.sessionNamespace = namespace
     try {
       const raw = await readFile(this.filePath, 'utf8')
       const parsed = JSON.parse(raw) as Partial<StateFile>
       if (parsed?.version === 1 && typeof parsed.roomSessions === 'object' && parsed.roomSessions !== null) {
+        // 命名空间隔离：磁盘记录的 namespace 与当前不一致（例如同一个 stateDir 被
+        // 另一个 dsh 实例写过后，本实例再次启动）时，作废房间↔会话绑定与会话代数，
+        // 让本实例重新生成自己的确定性会话 id，绝不 resume 到别的实例的历史。
+        const storedNs = typeof parsed.sessionNamespace === 'string' ? parsed.sessionNamespace : undefined
+        const nsChanged = namespace !== undefined && storedNs !== undefined && storedNs !== namespace
         this.data = {
           version: 1,
-          roomSessions: parsed.roomSessions as Record<string, RoomBinding>,
+          roomSessions: nsChanged ? {} : parsed.roomSessions as Record<string, RoomBinding>,
           processedEventIds: Array.isArray(parsed.processedEventIds) ? parsed.processedEventIds.slice(-DEDUP_CAP) : [],
           ...(typeof parsed.syncToken === 'string' ? { syncToken: parsed.syncToken } : {}),
-          ...(typeof parsed.roomCwds === 'object' && parsed.roomCwds !== null ? { roomCwds: parsed.roomCwds as Record<string, string> } : {}),
+          ...(typeof parsed.roomCwds === 'object' && parsed.roomCwds !== null && !nsChanged ? { roomCwds: parsed.roomCwds as Record<string, string> } : {}),
           ...(typeof parsed.matrixTasks === 'object' && parsed.matrixTasks !== null ? { matrixTasks: parsed.matrixTasks as Record<string, MatrixTask[]> } : {}),
-          ...(typeof parsed.roomSessionEpochs === 'object' && parsed.roomSessionEpochs !== null ? { roomSessionEpochs: parsed.roomSessionEpochs as Record<string, number> } : {}),
+          ...(typeof parsed.roomSessionEpochs === 'object' && parsed.roomSessionEpochs !== null && !nsChanged ? { roomSessionEpochs: parsed.roomSessionEpochs as Record<string, number> } : {}),
         }
       }
     } catch (error) {
       // 首次运行没有状态文件是正常情况；其它错误照常抛出。
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    // 无论文件是否存在、是否读成功，只要提供了命名空间就记录到 data，
+    // 保证首次 saveNow 时它被序列化进磁盘（否则后续读回时 storedNs 为 undefined，作废失效）。
+    if (namespace !== undefined) {
+      this.data.sessionNamespace = namespace
     }
     await this.loadAllowDeny()
   }

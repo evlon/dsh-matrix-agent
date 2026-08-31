@@ -399,6 +399,12 @@ function AccountTab(props) {
     React.createElement(TextField, { label: '分身账号 ID（需重启）', value: form.userId, onChange: set('userId'), placeholder: '@ai-xxx:server' }),
     React.createElement(TextField, { label: 'Access Token（需重启，已保存不回显）', value: '', onChange: set('accessToken'), type: 'password', placeholder: '留空保持不变' }),
     React.createElement(TextField, {
+      label: '实例命名空间 instanceKey（需重启，留空自动用 DSH_HOME）',
+      value: form.instanceKey, onChange: set('instanceKey'),
+      placeholder: '留空 = 自动按 DSH_HOME 隔离（推荐）',
+      hint: '不同 dsh 实例（端口/profile/DSH_HOME）登录同一分身、处理同一房间时，会话 id 会冲突互相 resume。留空时自动用 DSH_HOME 做会话隔离；也可显式填 "3090" 之类标识。',
+    }),
+    React.createElement(TextField, {
       label: 'Owner（审批应答人）',
       value: form.owner, onChange: set('owner'),
       placeholder: defaultOwner !== undefined ? defaultOwner : '@user:server',
@@ -464,6 +470,7 @@ const FORM_DEFAULTS = {
   homeserverUrl: '',
   userId: '',
   owner: '',
+  instanceKey: '',
   respondToAll: true,
   allowAllUsers: false,
   allowedUserIds: [],
@@ -557,7 +564,7 @@ function MatrixSettingsPage(props) {
   // 各 tab 的字段清单（用于「重置为默认」）。
   const TAB_FIELDS = {
     soul: ['soul'], // 灵魂为嵌套对象，重置时 unset 整个 soul。
-    account: ['homeserverUrl', 'userId', 'accessToken', 'owner', 'respondToAll', 'allowAllUsers', 'allowedUserIds', 'provider', 'model', 'agentPreset', 'chunkMaxChars', 'proactiveSendRequiresApproval', 'preserveRichText'],
+    account: ['homeserverUrl', 'userId', 'accessToken', 'instanceKey', 'owner', 'respondToAll', 'allowAllUsers', 'allowedUserIds', 'provider', 'model', 'agentPreset', 'chunkMaxChars', 'proactiveSendRequiresApproval', 'preserveRichText'],
     social: ['autoIntroduce', 'maxSelfIntroMentions', 'memberMemory', 'autoGreet', 'selfIntroTemplate', 'testRoomPrefix', 'secretaryGroupDefault', 'secretaryDmDefault'],
   }
   // 重置某 tab：清除 settings 用户层对应字段（回继承默认），并同步前端 form。

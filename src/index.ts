@@ -25,6 +25,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { MatrixBridge } from './bridge.js'
 import type { Config as MatrixConfig, DigitalTwinAccount } from './config.js'
+import { resolveStateDir } from './config.js'
 import { registerSoul } from './soul.js'
 import { registerMatrixSettings } from './settings.js'
 import type { TimelineOps, SecretaryOps } from './settings.js'
@@ -51,6 +52,9 @@ export const name = 'matrix-agent'
 export const inject = ['agents', 'tools', 'settings']
 
 export function apply(ctx: Context, config: MatrixConfig): void {
+  // stateDir 绝对化：相对路径锚定到 DSH_HOME（而非 cwd），使不同 dsh 实例
+  // （开发者/测试者/使用者各自 DSH_HOME）在相同工作目录下运行也互不覆盖 state.json。
+  config.stateDir = resolveStateDir(config.stateDir)
   // 关键连接参数校验：缺失时不 throw（保持插件存活，设置页可用），仅禁用 Matrix 桥；
   // 用户在浏览器设置好参数后（settings live 更新）自动恢复连接。
   const missing: string[] = []
@@ -67,6 +71,12 @@ export function apply(ctx: Context, config: MatrixConfig): void {
   // onTimelineOps 经引用转发：bridge 创建后把管理命令分发到账号，再清零命令字段。
   let bridgeRef: MatrixBridge | undefined
   let bridgeDisposer: (() => void) | undefined
+  // soulHandle 用 let 提前声明：registerMatrixSettings 内部的首次 applyUser 会同步触发
+  // onConfigChange，若此时 startBridge 引用尚未赋值的 soulHandle 会抛 TDZ
+  // （"Cannot access 'soulHandle' before initialization"），导致 settings register 失败、
+  // snapshotScope 永不设置。改为「soulHandle 就绪后才允许 onConfigChange 启动 bridge」，
+  // apply 末尾的 initToken 检查在 soulHandle 就绪后兜底启动。
+  let soulHandle: ReturnType<typeof registerSoul> | undefined
   const settingsHandle = registerMatrixSettings(ctx, config, {
     onTimelineOps: (ops: TimelineOps) => {
       bridgeRef?.handleTimelineOps(ops)
@@ -78,7 +88,7 @@ export function apply(ctx: Context, config: MatrixConfig): void {
     onConfigChange: (merged: MatrixConfig) => {
       const tok = merged.accessToken === '' ? process.env.DSH_MATRIX_TOKEN : merged.accessToken
       const ready = tok !== undefined && tok !== '' && merged.homeserverUrl !== '' && merged.userId !== ''
-      if (ready && bridgeRef === undefined) {
+      if (ready && bridgeRef === undefined && soulHandle !== undefined) {
         ctx.logger.info('[dsh-matrix-agent] config complete, starting Matrix bridge')
         startBridge(merged, tok as string)
       } else if (!ready && bridgeRef !== undefined) {
@@ -89,7 +99,7 @@ export function apply(ctx: Context, config: MatrixConfig): void {
   })
   const mergedConfig: MatrixConfig = settingsHandle.getMerged()
   // 灵魂子系统（行为统计 + 工具；配置从 merged config 读取，live 更新）。
-  const soulHandle = registerSoul(ctx, () => mergedConfig.soul ?? {
+  soulHandle = registerSoul(ctx, () => mergedConfig.soul ?? {
     enabled: true,
     persona: '你是「百变员工」：会根据所在房间的名称、讨论氛围与收到的消息，自动选择最合适的人设与语气（比如在技术群里像靠谱的研发、在需求讨论里像产品经理、面对新同事像乐于帮助的前辈）。你不需要固定一种性格。',
     style: '',
@@ -150,7 +160,7 @@ export function apply(ctx: Context, config: MatrixConfig): void {
   ctx.effect(() => {
     return () => {
       stopBridge()
-      soulHandle.dispose()
+      soulHandle?.dispose()
       settingsHandle.dispose()
     }
   }, 'matrix-agent.teardown')

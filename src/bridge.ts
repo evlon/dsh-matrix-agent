@@ -256,6 +256,20 @@ function stableHash(input: string): string {
 }
 
 /**
+ * 解析当前 dsh 实例的会话命名空间（会话隔离身份）。
+ * 优先显式 config.instanceKey；否则回退 process.env.DSH_HOME（每个实例的稳定身份锚，
+ * 端口号会漂移/随机，不适合）。两者都缺省返回 undefined（旧行为：无命名空间）。
+ * 返回 undefined 表示「不启用实例隔离」——state 文件里的旧绑定不会被作废。
+ */
+function resolveSessionNamespace(instanceKey: string | undefined): string | undefined {
+  const explicit = typeof instanceKey === 'string' ? instanceKey.trim() : ''
+  if (explicit !== '') return explicit
+  const home = process.env.DSH_HOME
+  if (home !== undefined && home.trim() !== '') return home.trim()
+  return undefined
+}
+
+/**
  * 单个 Matrix 账号的桥接单元：独立 sync 循环、独立状态文件、独立会话绑定。
  */
 export class AccountBridge {
@@ -271,6 +285,8 @@ export class AccountBridge {
   private readonly authStore: AuthStore
   private readonly channel: Channel
   private readonly allAccountIds: readonly string[]
+  /** 会话命名空间（实例身份）：参与确定性会话 id，隔离不同 dsh 实例的同房间会话。 */
+  private readonly sessionNamespace: string | undefined
   /** 灵魂子系统句柄（index.ts 注册后传入），用于 agentSetup 注入灵魂 prompt。 */
   private readonly soulHandle?: SoulHandle
   /** 成员记忆库（记住每个房间里见过的成员）。 */
@@ -358,6 +374,7 @@ export class AccountBridge {
     publishTimelineSnapshot?: (snapshot: { entries: unknown[]; updatedAt: number }) => void,
     fetchFn?: typeof fetch,
     sleep?: (ms: number) => Promise<void>,
+    sessionNamespace?: string,
   ) {
     this.ctx = ctx
     this.config = config
@@ -366,6 +383,7 @@ export class AccountBridge {
     this.allAccountIds = allAccountIds
     this.pendingRooms = pendingRooms
     this.soulHandle = soulHandle
+    this.sessionNamespace = sessionNamespace
     this.timeline = timeline ?? new TwinTimeline(config.stateDir, config.timelineCap ?? 500)
     this.publishTasksSnapshot = publishTasksSnapshot
     this.publishTimelineSnapshot = publishTimelineSnapshot
@@ -405,7 +423,7 @@ export class AccountBridge {
   /** ---------- 生命周期 ---------- */
 
   async start(): Promise<void> {
-    await this.state.load()
+    await this.state.load(this.sessionNamespace)
     if (this.config.memberMemory !== false) {
       await this.memberStore.load().catch((error: unknown) => {
         this.ctx.logger.warn('[dsh-matrix-agent] member store load failed: %s', messageOf(error))
@@ -560,9 +578,10 @@ export class AccountBridge {
       this.diag.log('  -> group-respondToAll-branch: respond=true')
       return true
     }
-    // 群聊默认秘书（分身账号）：未 @ 的群聊消息也放行进后续流程（由 isTwinMode 决定
+    // 群聊默认秘书（数字分身账号）：未 @ 的群聊消息也放行进后续流程（由 isTwinMode 决定
     // 是否进任务队列；私聊或 @ 提及仍按原逻辑）。避免工作任务被 shouldRespond 提前过滤。
-    if (this.config.secretaryGroupDefault !== false && !this.isMain) {
+    // 数字分身判定：配置了 owner 即视为分身（而非 isMain——单账号进程登录分身账号时 isMain=true）。
+    if (this.config.secretaryGroupDefault !== false && this.owner !== undefined && this.owner !== '') {
       const dm = this.channel.isDirectRoom ? await this.channel.isDirectRoom(message.roomId) : false
       if (!dm) {
         this.diag.log('  -> group-secretary-branch: respond=true (queue gate)')
@@ -650,7 +669,7 @@ export class AccountBridge {
     if (handle === undefined) {
       const epoch = this.state.sessionEpoch(roomId)
       const suffix = epoch > 0 ? `-e${epoch}` : ''
-      const sessionId = SessionId(`matrix-${localpartOf(this.userId)}-${stableHash(roomId)}${suffix}`)
+      const sessionId = SessionId(`matrix-${localpartOf(this.userId)}-${this.roomHash(roomId)}${suffix}`)
       handle = await this.acquireAgent(sessionId, { cwd })
     }
 
@@ -663,7 +682,7 @@ export class AccountBridge {
       await handle.dispose().catch(() => {})
       this.state.deleteRoom(roomId)
       const nextEpoch = this.state.bumpSessionEpoch(roomId)
-      const sessionId = SessionId(`matrix-${localpartOf(this.userId)}-${stableHash(roomId)}-e${nextEpoch}`)
+      const sessionId = SessionId(`matrix-${localpartOf(this.userId)}-${this.roomHash(roomId)}-e${nextEpoch}`)
       handle = await this.acquireAgent(sessionId, { cwd })
     }
 
@@ -672,6 +691,15 @@ export class AccountBridge {
     // 会话标题 = Matrix 房间名（pin 住，自动标题不再覆盖）。
     void this.nameSessionFromRoom(roomId, handle.agent)
     return handle.agent
+  }
+
+  /**
+   * 房间 → 确定性 hash：把实例命名空间混入 hash 输入，使同一房间在不同 dsh 实例
+   * 下得到不同会话 id（互不 resume）。无命名空间时退化为旧的 stableHash(roomId)。
+   */
+  private roomHash(roomId: string): string {
+    const ns = this.sessionNamespace
+    return ns === undefined || ns === '' ? stableHash(roomId) : stableHash(`${ns}\n${roomId}`)
   }
 
   /**
@@ -1341,10 +1369,14 @@ export class AccountBridge {
    * 绝不注入成员名单——大群也不会放大 token。群名/人数均走带缓存的接口。
    */
   /** 该房间是否启用秘书编排（任务入队/请示/确认）：
-   * - 全局 digitalTwinMode=true → 全部启用（含 @ 提及，除非消息被 @ 自己的即时交流？——digitalTwinMode 显式开启时不豁免）；
+   * - 全局 digitalTwinMode=true → 全部启用；
    * - 房间名匹配 twinModeRoomPrefix → 该房间启用（如测试房间）；
-   * - 群聊默认秘书（secretaryGroupDefault，默认 true）→ 非私聊房间启用；私聊保持直接回复。
-   * @param message 入站消息：群聊默认秘书时，@ 提及本账号的消息视为即时交流直接回复（不入队列）。 */
+   * - 群聊默认秘书（secretaryGroupDefault，默认 true）→ 非私聊房间启用；
+   * - 私聊默认秘书（secretaryDmDefault，默认 false）→ 私聊房间启用；
+   * - **主人不在场即秘书**：无论私聊/群聊，只要 owner 不在房间成员里，分身不得擅作主张，
+   *   一律走秘书编排（请示不在场的主人）。这是分身自治的红线。
+   * @param message 入站消息：群聊默认秘书时，@ 提及本账号的消息视为即时交流直接回复（不入队列）。
+   *   但「主人不在场」的红线优先：即使 @ 提及自己，主人不在也仍走秘书队列。 */
   private async isTwinMode(roomId: string, message?: InboundMessage): Promise<boolean> {
     if (this.config.digitalTwinMode) return true
     const prefix = this.config.twinModeRoomPrefix
@@ -1356,9 +1388,15 @@ export class AccountBridge {
         // 房间名获取失败：回落到默认判断，不阻断秘书功能。
       }
     }
-    // 仅数字分身账号（非主账号）启用默认秘书；主账号个人助手（isMain=true）保持直接回复，
-    // 除非显式配置 digitalTwinMode 或前缀匹配（已在上面处理）。
-    if (this.isMain) return false
+    // 数字分身判定：配置了 owner（有主人）的账号即视为数字分身，需要秘书编排；
+    // 未配置 owner 的账号才是真人自己的主助手（直接回复）。
+    // 单账号进程登录分身账号（userId === config.userId 即 isMain=true）时，只要配了
+    // owner 也按分身处理——否则分身被当成主助手，主人不在场也擅自回复，违背"分身不自主"红线。
+    if (this.owner === undefined || this.owner === '') return false
+    // 主人不在场红线：owner 明确不在房间成员里 → 一律秘书模式（分身不得擅自做主）。
+    // 成员列表获取失败（undefined）时不做此判定，回落到下面的人数/前缀逻辑。
+    const ownerPresent = await this.isOwnerInRoom(roomId)
+    if (ownerPresent === false) return true
     const isDm = this.channel.isDirectRoom ? await this.channel.isDirectRoom(roomId) : false
     if (isDm) {
       // 私聊：默认不启用秘书（直接对话）；secretaryDmDefault=true 时启用（所有私聊消息进队列待审）。
@@ -1370,6 +1408,19 @@ export class AccountBridge {
       return true
     }
     return false
+  }
+
+  /**
+   * 主人（owner）是否在当前房间成员中。三态：
+   * - true：明确在场（成员列表含 owner）
+   * - false：明确不在场（成员列表非空且不含 owner）
+   * - undefined：无法确定（未配置 owner，或成员列表获取失败/为空）
+   */
+  private async isOwnerInRoom(roomId: string): Promise<boolean | undefined> {
+    if (this.owner === undefined || this.owner === '') return undefined
+    const members = this.channel.getRoomMembers ? await this.channel.getRoomMembers(roomId).catch(() => undefined) : undefined
+    if (members === undefined || members.length === 0) return undefined
+    return members.some((m) => m.userId === this.owner)
   }
 
   /** 消息是否 @ 提及了本账号（用于群聊默认秘书时区分即时交流与工作任务）。 */
@@ -1501,6 +1552,9 @@ export class AccountBridge {
    * - 命中黑名单 → 自动拒绝（记原因）；命中白名单 → 自动批准（记"记忆授权"）；
    * - 否则 pending 等 Owner 用 /approve 审核。
    * 队列超 taskQueueMax 时最早 pending 任务被自动拒绝（防堆积）。
+   *
+   * 主人不在场（owner 不在房间成员里）：分身不得擅自做主，入队后立即私聊主人请示
+   * （复用 executeTask 的「开工前请示」sendDm），而非停在 pending 等群内 /approve。
    */
   private async enqueueTask(roomId: string, sender: string, text: string): Promise<void> {
     const matter = this.classifyMatter(text)
@@ -1543,6 +1597,14 @@ export class AccountBridge {
       await this.executeTask(roomId, task)
       return
     }
+    // 主人不在场：分身不得擅作主张，立即私聊主人请示开工（而非停在 pending）。
+    // executeTask 内部若 taskClarifyBeforeStart 且配置了 owner，会 sendDm(owner, 【任务请示】)。
+    // 仅当「明确不在场」（成员列表非空且不含 owner）时触发；成员列表获取失败时不自动请示。
+    if (this.owner !== undefined && this.owner !== '' && (await this.isOwnerInRoom(roomId)) === false) {
+      this.ctx.logger.info('[dsh-matrix-agent] owner absent in room=%s, auto-request clarification from owner (task=%s)', roomId, task.id)
+      await this.executeTask(roomId, task)
+      return
+    }
     await this.safeSend(
       roomId,
       `📥 新任务已入队（待审）：\n来自 ${sender}：${text}\n发送 /tasks 查看，/approve N 执行。`,
@@ -1565,14 +1627,32 @@ export class AccountBridge {
    */
   private async executeTask(roomId: string, task: MatrixTask): Promise<void> {
     // 新房间（未绑定 cwd）先引导选目录。
+    // 主人不在场时：分身无法在房间内等主人选目录，直接用第一候选目录开工
+    // （选目录这件事并入后续「开工请示」私聊主人时再确认）。
     if (this.state.roomCwd(roomId) === undefined) {
       const candidates = await this.cwdCandidatesFor(roomId)
-      this.cwdPending.set(roomId, { candidates, taskId: task.id })
-      task.status = 'pending'
-      task.note = '等待设定工作目录'
-      this.persistTasks(roomId)
-      await this.safeSend(roomId, formatCwdGuide(candidates), markdownToHtml(formatCwdGuide(candidates)))
-      return
+      const ownerAbsent = this.owner !== undefined && this.owner !== '' && (await this.isOwnerInRoom(roomId)) === false
+      if (ownerAbsent) {
+        const fallback = candidates[0]
+        if (fallback !== undefined && fallback !== '') {
+          this.state.setRoomCwd(roomId, fallback)
+          this.cwdPending.delete(roomId)
+        } else {
+          this.cwdPending.set(roomId, { candidates, taskId: task.id })
+          task.status = 'pending'
+          task.note = '等待设定工作目录'
+          this.persistTasks(roomId)
+          await this.safeSend(roomId, formatCwdGuide(candidates), markdownToHtml(formatCwdGuide(candidates)))
+          return
+        }
+      } else {
+        this.cwdPending.set(roomId, { candidates, taskId: task.id })
+        task.status = 'pending'
+        task.note = '等待设定工作目录'
+        this.persistTasks(roomId)
+        await this.safeSend(roomId, formatCwdGuide(candidates), markdownToHtml(formatCwdGuide(candidates)))
+        return
+      }
     }
     // 串行：若已有 running 任务，标记 approved 等 turn/end 消费。
     if (this.runningTask.get(roomId) !== undefined) {
@@ -2443,6 +2523,11 @@ export class MatrixBridge {
     const pendingRooms = new Set<string>()
     // 共享自我时间线（主 + 同进程分身共一份，都是本进程分身的活动）。
     const timeline = new TwinTimeline(config.stateDir, config.timelineCap ?? 500)
+    // 实例命名空间：隔离不同 dsh 实例（端口/profile/DSH_HOME）的同房间会话。
+    const sessionNamespace = resolveSessionNamespace(config.instanceKey)
+    if (sessionNamespace !== undefined) {
+      ctx.logger.info('[dsh-matrix-agent] session namespace: %s', sessionNamespace)
+    }
 
     // 1. 挂载主账号（保持 state.json 名字，向后兼容）。
     //    按用户架构：userId 即数字分身自己，owner 是真实人账号（仅在 Matrix 客户端登录）。
@@ -2471,6 +2556,7 @@ export class MatrixBridge {
         config.updateTimelineSnapshot,
         config.fetchFn,
         config.sleep,
+        sessionNamespace,
       ),
     )
 
@@ -2498,6 +2584,7 @@ export class MatrixBridge {
           config.updateTimelineSnapshot,
           config.fetchFn,
           config.sleep,
+          sessionNamespace,
         ),
       )
     }
