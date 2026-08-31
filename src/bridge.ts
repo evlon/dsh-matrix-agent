@@ -48,6 +48,23 @@ const TIMELINE_MEMORY_SECTION_TEXT =
   '你有跨群的自我记忆。需要回忆自己做过的事时，用 twin_timeline 工具查询你的行动摘要；' +
   '想深入了解某个房间的细节时，用 matrix_get_recent_messages 查询该房间。'
 
+/**
+ * 秘书工作流提示词段（彻底分层的默认工作流）。
+ * bridge 不代执行动作，只把「该怎么工作」注入 agent 的 system prompt，
+ * 由 agent 用原子工具自行组合。可被 skill（可定制）覆盖，但这里保证最小可用。
+ * 仅数字分身（有 owner）注入；真人主助手（无 owner）不注入（直接对话即可）。
+ */
+const SECRETARY_WORKFLOW_SECTION_TEXT = [
+  '【工作方式】你是数字分身，主人是 owner。收到同事任务时按以下流程，绝不在群里泄露「请示/待审/等老板」或你的内心独白。',
+  '1. 群里回一句自然的人话（如「收到，我这就去整理 X，稍后发你」），不要只报进度。',
+  '2. 私下请示主人：调 matrix_request_owner_decision，说清「哪个群、谁派的、什么活、建议目录」。',
+  '3. 等主人回复「批准/开工/可以」再动手；主人指定目录就按那个目录；没回就继续等，绝不擅自开工。',
+  '4. 用 matrix_set_room_cwd 定目录，matrix_list_workspace_files 列文件，matrix_read_workspace_file 读真实数据，整理出结果。',
+  '5. 先 matrix_report_owner 把完整结果私发主人，等主人回「交付/批准」。',
+  '6. 主人确认后，才用 matrix_send_room_message 把完整结果发到群里交付。',
+  '硬性禁令：主人未确认前绝不发群；不凭记忆编造数据，必须读工作目录真实文件。',
+].join('\n')
+
 /** 媒体 msgtype → 中文标签（入站媒体归一）。 */
 const MEDIA_LABELS: Record<string, string> = {
   'm.image': '图片',
@@ -857,6 +874,18 @@ export class AccountBridge {
             order: 5,
             text: () => soulText(soul.getSoulConfig()),
           }), 'matrix-agent.soul')
+        }
+      }
+      // 秘书工作流提示词段：数字分身（有 owner）注入默认工作流，指导 agent 用原子工具
+      // 走「请示→读数据→汇报→等交付→发群」。这是提示词指导，不是代执行；红线仍在 bridge。
+      if (this.owner !== undefined && this.owner !== '') {
+        const systemPrompt = getSystemPrompt()
+        if (systemPrompt !== undefined) {
+          agentCtx.effect(() => systemPrompt.section({
+            name: 'twin:secretary-workflow',
+            order: 10,
+            text: () => SECRETARY_WORKFLOW_SECTION_TEXT,
+          }), 'matrix-agent.secretary-workflow')
         }
       }
       // 自我时间线常驻提示词段（第 0 级暴露）：恒定字符串，字节永不变化，
