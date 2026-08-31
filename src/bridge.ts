@@ -21,14 +21,14 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { Config, DigitalTwinAccount } from './config.js'
-import { chunkText, markdownToHtml, formatToolCall, describeMedia, wantsProcess, formatToolResult, formatTurnEnd, formatRetry, formatRetryCircuitTripped, formatTasks, formatCwdGuide, formatRules, formatWorkspaceState, isProviderFailure, formatProviderFailure } from './format.js'
-import type { Verbosity, WorkspaceState } from './format.js'
+import { chunkText, markdownToHtml, formatToolCall, describeMedia, wantsProcess, formatToolResult, formatTurnEnd, formatRetry, formatRetryCircuitTripped, formatRules, isProviderFailure, formatProviderFailure } from './format.js'
+import type { Verbosity } from './format.js'
 import { MatrixChannel } from './matrix.js'
 import type { Channel, InboundMessage, MediaBlock, RoomEvent } from './matrix.js'
 import { getDiag } from './diag.js'
 import { ChatLog } from './chatlog.js'
 import { BridgeState } from './store.js'
-import type { MatrixTask, AllowDenyRule } from './store.js'
+import type { AllowDenyRule } from './store.js'
 import { AuthStore } from './auth-store.js'
 import { MemberStore } from './member-store.js'
 import { soulText, rolePersonaFor, SOUL_PRESET_IDS } from './soul.js'
@@ -347,18 +347,18 @@ export class AccountBridge {
    */
   private readonly providerBroken = new Map<string, { provider: string; model: string; at: number }>()
   /**
-   * 房间级 matrix 任务队列（数字分身收件箱）：别的同事发来的待审工作。
-   * 内存镜像，与 state.matrixTasks 同步；数字分身模式下入站消息进此队列，
-   * 由 Owner 用 /approve 逐条授权后串行执行。
+   * 交付授权（彻底分层红线）：主人已确认「交付」的房间集合。
+   * 数字分身（有 owner）对外发言 matrix_send_room_message 前，须先 matrix_report_owner
+   * 汇报并等主人回「交付」；主人确认后置位，此后该房间的对外交付放行。
+   * 内存级；/new 重置时清空。
    */
-  private readonly matrixTasks = new Map<string, MatrixTask[]>()
+  private readonly deliveryAuthorized = new Set<string>()
   /**
-   * 等待选工作目录的房间：值为候选目录列表 + 暂存的待执行任务 id。
-   * 新房间首次 /approve 时若尚未绑定工作目录则进入此态。
+   * 主人私聊房 → 工作房间 的映射。agent 用 matrix_request_owner_decision /
+   * matrix_report_owner 发起请示/汇报时，桥接层记录「这个 DM 房对应哪个工作房间」，
+   * 主人回复「批准/交付」时据此反查工作房间置位交付授权。
    */
-  private readonly cwdPending = new Map<string, { candidates: string[]; taskId: string }>()
-  /** 房间当前正在执行（已 approve、turn 进行中）的任务 id。 */
-  private readonly runningTask = new Map<string, string>()
+  private readonly ownerDmToWorkRoom = new Map<string, string>()
 
   constructor(
     ctx: Context,
@@ -432,15 +432,9 @@ export class AccountBridge {
     if (this.config.timelineEnabled !== false) {
       this.timeline.load()
     }
-    // 恢复各房间任务队列到内存镜像（重启不丢审核进度）。
-    for (const [roomId, tasks] of Object.entries(this.state.matrixTasksSnapshot())) {
-      this.matrixTasks.set(roomId, tasks)
-    }
-    // 启动即发布一次快照（任务 + 时间线）：即使当前无活动，Client 也能读到
-    // 空/历史数据，而不是永远"加载中"。
-    this.publishTasks()
+    // 启动即发布一次时间线快照，Client 能读到历史数据而非"加载中"。
     this.publishTimeline()
-    this.diag.log(`start: published initial snapshots (tasks rooms=${this.matrixTasks.size}, publishTasksSnapshot=${this.publishTasksSnapshot !== undefined}, publishTimelineSnapshot=${this.publishTimelineSnapshot !== undefined})`)
+    this.diag.log(`start: published initial timeline snapshot (publishTimelineSnapshot=${this.publishTimelineSnapshot !== undefined})`)
     // Matrix 专属工具：注册到 ToolRuntime（全局 layer），所有 agent 可见可调用。
     // 幂等守卫：多账号（主 + 分身）共享同一 ctx，只有主账号注册一次。
     if (this.isMain && !this.toolsRegistered) {
@@ -615,13 +609,6 @@ export class AccountBridge {
     if (!isAbsolute(cwd)) throw new Error(`工作目录必须是绝对路径：${cwd}`)
     if (!existsSync(cwd)) throw new Error(`工作目录不存在：${cwd}`)
     this.state.setRoomCwd(roomId, cwd)
-    // 回写经验：把当前房间最近一条任务的工作内容（classifyMatter）映射到该目录。
-    const tasks = this.tasksOf(roomId)
-    const last = tasks[tasks.length - 1]
-    if (last !== undefined) {
-      const matter = this.classifyMatter(last.text)
-      if (matter !== '*' && matter !== '') this.state.setMatterCwd(matter, cwd)
-    }
     this.ctx.logger.info('[dsh-matrix-agent] room %s cwd set to %s', roomId, cwd)
   }
 
@@ -640,6 +627,7 @@ export class AccountBridge {
     try {
       const dm = await this.channel.sendDm?.(this.owner, `【任务请示】\n${ctx}\n\n${question}`)
       if (dm === undefined) return { roomId, sent: false }
+      this.ownerDmToWorkRoom.set(dm.roomId, roomId)
       this.recordTimeline(dm.roomId, 'approval', { target: this.owner }, 0, 'secretary')
       return { roomId: dm.roomId, sent: true }
     } catch (error) {
@@ -655,6 +643,7 @@ export class AccountBridge {
     try {
       const dm = await this.channel.sendDm?.(this.owner, `【进度汇报】\n${ctx}\n\n${summary}`)
       if (dm === undefined) return { roomId, sent: false }
+      this.ownerDmToWorkRoom.set(dm.roomId, roomId)
       this.recordTimeline(dm.roomId, 'approval', { target: this.owner }, 0, 'secretary')
       return { roomId: dm.roomId, sent: true }
     } catch (error) {
@@ -987,9 +976,7 @@ export class AccountBridge {
     this.toolNames.delete(roomId)
     this.roomVerbosity.delete(roomId)
     this.retryCounts.delete(roomId)
-    this.matrixTasks.delete(roomId)
-    this.cwdPending.delete(roomId)
-    this.runningTask.delete(roomId)
+    this.deliveryAuthorized.delete(roomId)
   }
 
   /** ---------- 入站消息 ---------- */
@@ -1344,38 +1331,17 @@ export class AccountBridge {
         return
       }
 
-      // 老板私聊回复路由（秘书编排）：消息来自老板且房间是某任务的请示/确认房时，
-      // 回复按任务状态处理（开工指示 / 交付确认 / 修改意见），不进普通任务队列。
+      // 老板私聊回复路由（彻底分层）：主人回复「批准/交付」→ 按 DM 房反查工作房间，
+      // 置位交付授权（deliveryAuthorized），让 agent 后续 matrix_send_room_message 放行。
+      // 主人回复目录路径 → 设工作目录并回写经验。不再代发群消息、不再走任务状态机。
       if (this.owner !== undefined && message.sender === this.owner) {
-        const taskInDm = this.findTaskByOwnerDm(message.roomId)
-        if (taskInDm !== undefined) {
-          await this.handleOwnerDmReply(message.roomId, taskInDm, stripped)
+        const workRoom = this.ownerDmToWorkRoom.get(message.roomId)
+        if (workRoom !== undefined) {
+          await this.handleOwnerReply(message.roomId, workRoom, stripped)
           return
         }
       }
 
-      // 工作目录选择回复：房间处于 cwdPending 时，编号即选定目录（Owner 操作）。
-      const pending = this.cwdPending.get(message.roomId)
-      if (pending !== undefined) {
-        const idx = Number.parseInt(stripped, 10)
-        if (Number.isInteger(idx) && idx >= 1 && idx <= pending.candidates.length) {
-          const cwd = pending.candidates[idx - 1]
-          if (cwd === undefined) return
-          this.state.setRoomCwd(message.roomId, cwd)
-          this.cwdPending.delete(message.roomId)
-          this.ctx.logger.info('[dsh-matrix-agent] room %s cwd set to %s', message.roomId, cwd)
-          // 选定后创建会话并执行暂存的任务。
-          const task = this.findTask(message.roomId, pending.taskId)
-          void this.safeSend(message.roomId, `✅ 已设定工作目录：\n${cwd}\n正在创建会话并执行任务…`, undefined)
-          if (task !== undefined) {
-            await this.executeTask(message.roomId, task)
-          }
-          return
-        }
-        // 非编号回复：提示重选。
-        void this.safeSend(message.roomId, '请回复编号选择工作目录，或发送 /reject 取消该任务。', undefined)
-        return
-      }
 
       this.diag.log(`handleMessage room=${message.roomId} from=${message.sender} digitalTwinMode=${this.config.digitalTwinMode} text=${text.slice(0, 60).replace(/\n/g, ' ')}`)
       // 成员记忆：消息来自其他成员时 upsert + 累计互动（记住每个人）。
@@ -1403,17 +1369,11 @@ export class AccountBridge {
         return
       }
 
-      // 秘书编排（任务入队/请示/确认）：同事/主管发来的工作进 matrix 任务队列待审，不直接执行。
-      // 机器人自己账号发出的消息（如有）不进队列；命令已在上方处理。
-      // 入队用 stripped（已剥 @提及 前缀）：任务面板与注入 agent 的文本不带原始提及标记。
-      // 群聊默认秘书：未 @ 提及本账号的群聊消息按工作任务入队（@ 提及自己的即时交流仍直接回复）。
-      if (await this.isTwinMode(message.roomId, message) && message.sender !== this.userId) {
-        await this.enqueueTask(message.roomId, message.sender, stripped)
-        return
-      }
-
+      // 彻底分层：普通消息直接注入 agent（不再进任务队列/自动请示）。
+      // agent 按 skill 用原子工具（matrix_request_owner_decision / matrix_read_workspace_file /
+      // matrix_report_owner / matrix_send_room_message）自行完成「请示→读数据→整理→私发→交付」。
+      // bridge 只守住红线：出站分流（assistant/message 吞掉）+ 交付授权门控。
       // 合并窗口：'..' 继续、'!!' 立即提交、裸文本等待 mergeTimeoutSecs。
-      // 用 stripped（已剥 @提及 前缀）：注入 agent 的提示词不带原始提及标记。
       let rest = stripped
       let flush = false
       if (stripped.endsWith('!!')) {
@@ -1469,39 +1429,6 @@ export class AccountBridge {
    *   一律走秘书编排（请示不在场的主人）。这是分身自治的红线。
    * @param message 入站消息：群聊默认秘书时，@ 提及本账号的消息视为即时交流直接回复（不入队列）。
    *   但「主人不在场」的红线优先：即使 @ 提及自己，主人不在也仍走秘书队列。 */
-  private async isTwinMode(roomId: string, message?: InboundMessage): Promise<boolean> {
-    if (this.config.digitalTwinMode) return true
-    const prefix = this.config.twinModeRoomPrefix
-    if (prefix !== '') {
-      try {
-        const name = this.channel.getRoomName ? await this.channel.getRoomName(roomId) : undefined
-        if (name !== undefined && name.includes(prefix)) return true
-      } catch {
-        // 房间名获取失败：回落到默认判断，不阻断秘书功能。
-      }
-    }
-    // 数字分身判定：配置了 owner（有主人）的账号即视为数字分身，需要秘书编排；
-    // 未配置 owner 的账号才是真人自己的主助手（直接回复）。
-    // 单账号进程登录分身账号（userId === config.userId 即 isMain=true）时，只要配了
-    // owner 也按分身处理——否则分身被当成主助手，主人不在场也擅自回复，违背"分身不自主"红线。
-    if (this.owner === undefined || this.owner === '') return false
-    // 主人不在场红线：owner 明确不在房间成员里 → 一律秘书模式（分身不得擅自做主）。
-    // 成员列表获取失败（undefined）时不做此判定，回落到下面的人数/前缀逻辑。
-    const ownerPresent = await this.isOwnerInRoom(roomId)
-    if (ownerPresent === false) return true
-    const isDm = this.channel.isDirectRoom ? await this.channel.isDirectRoom(roomId) : false
-    if (isDm) {
-      // 私聊：默认不启用秘书（直接对话）；secretaryDmDefault=true 时启用（所有私聊消息进队列待审）。
-      return this.config.secretaryDmDefault === true
-    }
-    // 群聊：secretaryGroupDefault 默认启用；@ 提及本账号的消息视为即时交流，直接回复（不进任务队列）。
-    if (this.config.secretaryGroupDefault !== false) {
-      if (message !== undefined && this.isMentioningSelf(message)) return false
-      return true
-    }
-    return false
-  }
-
   /**
    * 主人（owner）是否在当前房间成员中。三态：
    * - true：明确在场（成员列表含 owner）
@@ -1587,510 +1514,43 @@ export class AccountBridge {
     }))
   }
 
-  /** ---------- Matrix 任务队列 ---------- */
-
-  private tasksOf(roomId: string): MatrixTask[] {
-    let tasks = this.matrixTasks.get(roomId)
-    if (tasks === undefined) {
-      tasks = this.state.loadTasks(roomId)
-      this.matrixTasks.set(roomId, tasks)
-    }
-    return tasks
-  }
-
-  private persistTasks(roomId: string): void {
-    this.state.saveTasks(roomId, this.tasksOf(roomId))
-    this.publishTasks()
-  }
-
   /**
-   * 发布任务快照（运行时镜像）：把本账号各房间任务 + session↔room 映射
-   * 写入 settings，供 DSH Web 的「任务」tab 与「所有任务」面板读取。
+   * 处理主人在私聊房的回复（彻底分层，无任务状态机）。
+   * - 回复「批准/交付/可以/ok」→ 置位交付授权（deliveryAuthorized），让 agent 后续发群放行。
+   * - 回复目录路径 → 设工作目录并回写经验。
+   * - 其它 → 记录为「主人指示」写回时间线，不做状态机动作。
    */
-  private publishTasks(): void {
-    if (this.publishTasksSnapshot === undefined) return
-    const rooms: Record<string, MatrixTask[]> = {}
-    for (const [roomId, tasks] of this.matrixTasks) {
-      rooms[roomId] = tasks
-    }
-    const sessionRooms: Record<string, string> = {}
-    for (const [sessionId, roomId] of Object.entries(this.state.sessionRoomsSnapshot())) {
-      sessionRooms[sessionId] = roomId
-    }
-    this.publishTasksSnapshot({ rooms, sessionRooms, updatedAt: Date.now() })
-  }
-
-  private findTask(roomId: string, taskId: string): MatrixTask | undefined {
-    return this.tasksOf(roomId).find((t) => t.id === taskId)
-  }
-
-  /** 工作目录状态（供任务面板渲染）。 */
-  private workspaceStateOf(roomId: string): { state: WorkspaceState; cwd?: string } {
-    const cwd = this.state.roomCwd(roomId)
-    if (cwd === undefined) return { state: 'none' }
-    // 选了目录但路径不存在，提示（仅做轻量判定，不强制）。
-    if (!existsSync(cwd)) return { state: 'missing', cwd }
-    return { state: 'bound', cwd }
-  }
-
-  /** 把任务进度推给房间。
-   *  - 有 owner（数字分身，请示需保密）：极简一行，避免刷完整面板、不暴露待审/老板。
-   *  - 无 owner（真人主助手，群内审核）：保留完整面板（待审/已批准是合理可见状态）。 */
-  private async pushTasks(roomId: string): Promise<void> {
-    const hasOwner = this.owner !== undefined && this.owner !== ''
-    if (!hasOwner) {
-      await this.showTasksDetail(roomId)
-      return
-    }
-    const tasks = this.tasksOf(roomId)
-    const done = tasks.filter((t) => t.status === 'done' || t.status === 'rejected').length
-    const total = tasks.length
-    const text = total === 0
-      ? '📭 暂无任务。'
-      : `📋 任务进度：进行中 ${total - done} / 已完成 ${done} / 共 ${total}`
-    await this.safeSend(roomId, text, undefined)
-  }
-
-  /** 用户主动 /tasks 时展示完整任务面板（对外视图：不暴露待审/请示/老板）。 */
-  private async showTasksDetail(roomId: string): Promise<void> {
-    const external = this.owner !== undefined && this.owner !== ''
-    const text = formatTasks(this.tasksOf(roomId), this.workspaceStateOf(roomId), external)
-    await this.safeSend(roomId, text, markdownToHtml(text))
-  }
-
-  /**
-   * 入站消息进 matrix 任务队列：先查人+事黑白名单。
-   * - 命中黑名单 → 自动拒绝（记原因）；命中白名单 → 自动批准（记"记忆授权"）；
-   * - 否则 pending 等 Owner 用 /approve 审核。
-   * 队列超 taskQueueMax 时最早 pending 任务被自动拒绝（防堆积）。
-   *
-   * 主人不在场（owner 不在房间成员里）：分身不得擅自做主，入队后立即私聊主人请示
-   * （复用 executeTask 的「开工前请示」sendDm），而非停在 pending 等群内 /approve。
-   */
-  private async enqueueTask(roomId: string, sender: string, text: string): Promise<void> {
-    const matter = this.classifyMatter(text)
-    const rule = this.state.matchRule(sender, matter) ?? this.state.matchRule(sender, '*')
-    const task: MatrixTask = {
-      id: `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      roomId,
-      sender,
-      text,
-      status: 'pending',
-      createdAt: Date.now(),
-    }
-    if (rule !== undefined && rule.kind === 'deny') {
-      task.status = 'rejected'
-      task.note = `命中黑名单（人=${rule.person} 事=${rule.matter}）自动拒绝`
-    } else if (rule !== undefined && rule.kind === 'allow') {
-      task.status = 'approved'
-      task.note = `命中白名单（人=${rule.person} 事=${rule.matter}）记忆授权`
-    }
-    const tasks = this.tasksOf(roomId)
-    tasks.push(task)
-    // 超限保护：拒绝最早的 pending。
-    const max = this.config.taskQueueMax
-    const pending = tasks.filter((t) => t.status === 'pending')
-    if (pending.length > max) {
-      const drop = pending[0]
-      if (drop !== undefined) {
-        drop.status = 'rejected'
-        drop.note = `队列超限（>${max}）自动拒绝`
-      }
-    }
-    this.persistTasks(roomId)
-
-    if (task.status === 'rejected') {
-      await this.safeSend(roomId, `🚫 任务已被拒绝：${task.note}\n${task.text}`, undefined)
-      return
-    }
-    if (task.status === 'approved') {
-      // 白名单命中：直接执行（仍受串行约束）。
-      await this.executeTask(roomId, task)
-      return
-    }
-    // 主人不在场：分身不得擅作主张，立即私聊主人请示开工（而非停在 pending）。
-    // executeTask 内部若 taskClarifyBeforeStart 且配置了 owner，会 sendDm(owner, 【任务请示】)。
-    // 仅当「明确不在场」（成员列表非空且不含 owner）时触发；成员列表获取失败时不自动请示。
-    if (this.owner !== undefined && this.owner !== '' && (await this.isOwnerInRoom(roomId)) === false) {
-      this.ctx.logger.info('[dsh-matrix-agent] owner absent in room=%s, auto-request clarification from owner (task=%s)', roomId, task.id)
-      await this.executeTask(roomId, task)
-      return
-    }
-    await this.safeSend(
-      roomId,
-      this.owner !== undefined && this.owner !== ''
-        ? '📥 收到，我来处理。'
-        : `📥 新任务已入队（待审）：\n来自 ${sender}：${text}\n发送 /tasks 查看，/approve N 执行。`,
-      undefined,
-    )
-  }
-
-  /** 粗粒度"事"分类：取消息首个有意义关键词（后续可接 LLM 分类）。 */
-  private classifyMatter(text: string): string {
-    const trimmed = text.trim()
-    if (trimmed === '') return '*'
-    // 取前 16 字作为事类别占位（人+事维度下"事"用关键词指代）。
-    return trimmed.slice(0, 16)
-  }
-
-  /**
-   * 执行一条已批准任务：先确保工作目录已设定（新房间引导），
-   * 再走「开工前请示」（taskClarifyBeforeStart），最后创建会话注入执行。
-   * 同一房间串行：runningTask 占用时排队等待 turn/end 释放。
-   */
-  private async executeTask(roomId: string, task: MatrixTask): Promise<void> {
-    try {
-      await this.executeTaskInner(roomId, task)
-    } catch (error) {
-      // executeTask 多处被 void 调用（/approve、秘书工作台 approve），任何未预期错误
-      // 都不能变成 unhandled rejection 导致 dsh fatal。
-      this.ctx.logger.error('[dsh-matrix-agent] executeTask failed for room %s task %s: %s', roomId, task.id, messageOf(error))
-      task.status = 'approved'
-      task.note = `执行失败：${messageOf(error).slice(0, 60)}`
-      this.persistTasks(roomId)
-    }
-  }
-
-  private async executeTaskInner(roomId: string, task: MatrixTask): Promise<void> {
-    // 新房间（未绑定 cwd）先引导选目录。
-    // 主人不在场时：分身无法在房间内等主人选目录，直接用第一候选目录开工
-    // （选目录这件事并入后续「开工请示」私聊主人时再确认）。
-    if (this.state.roomCwd(roomId) === undefined) {
-      const candidates = await this.cwdCandidatesFor(roomId)
-      const ownerAbsent = this.owner !== undefined && this.owner !== '' && (await this.isOwnerInRoom(roomId)) === false
-      if (ownerAbsent) {
-        const fallback = candidates[0]
-        if (fallback !== undefined && fallback !== '') {
-          this.state.setRoomCwd(roomId, fallback)
-          this.cwdPending.delete(roomId)
-        } else {
-          this.cwdPending.set(roomId, { candidates, taskId: task.id })
-          task.status = 'pending'
-          task.note = '等待设定工作目录'
-          this.persistTasks(roomId)
-          await this.safeSend(roomId, formatCwdGuide(candidates), markdownToHtml(formatCwdGuide(candidates)))
-          return
-        }
-      } else {
-        this.cwdPending.set(roomId, { candidates, taskId: task.id })
-        task.status = 'pending'
-        task.note = '等待设定工作目录'
-        this.persistTasks(roomId)
-        await this.safeSend(roomId, formatCwdGuide(candidates), markdownToHtml(formatCwdGuide(candidates)))
+  private async handleOwnerReply(dmRoomId: string, workRoomId: string, reply: string): Promise<void> {
+    const trimmed = reply.trim()
+    // 目录路径 → 设工作目录 + 回写经验。
+    const pathLike = /^(?:用|使用|目录|在|到)?\s*([A-Za-z]:[\\/][^\s]*|(?:\/|~)[^\s]*)$/.exec(trimmed)
+    if (pathLike !== null && pathLike[1] !== undefined) {
+      const candidate = pathLike[1].replace(/^~/, process.env.USERPROFILE ?? process.env.HOME ?? '')
+      if (isAbsolute(candidate) && existsSync(candidate)) {
+        this.state.setRoomCwd(workRoomId, candidate)
+        await this.safeSend(dmRoomId, `✅ 已设定工作目录：${candidate}。`, undefined)
         return
       }
-    }
-    // 串行：若已有 running 任务，标记 approved 等 turn/end 消费。
-    if (this.runningTask.get(roomId) !== undefined) {
-      task.status = 'approved'
-      task.note = '已批准，等待前序任务完成'
-      this.persistTasks(roomId)
-      await this.pushTasks(roomId)
+      await this.safeSend(dmRoomId, `⚠️ 目录不存在或不是绝对路径：${candidate}，请重新指定。`, undefined)
       return
     }
-    // 开工前请示：秘书私下问老板要求/优先级/范围；老板回复后注入执行，超时按原任务开始。
-    if (this.config.taskClarifyBeforeStart && this.owner !== undefined && task.status !== 'clarifying') {
-      const role = this.roleForTask(roomId, task)
-      const ctx = await this.ownerDmContext(roomId, task.sender)
-      // 建议目录：优先「工作内容→目录」经验记忆，其次候选首项。
-      const matter = this.classifyMatter(task.text)
-      const remembered = this.state.matterCwd(matter)
-      const suggested = remembered ?? (this.state.roomCwd(roomId) ?? (await this.cwdCandidatesFor(roomId))[0])
-      const cwdLine = suggested !== undefined && suggested !== ''
-        ? `建议工作目录：${suggested}\n（可直接回复目录路径，或回复「批准/用建议的」）`
-        : '工作目录：未定（请指定，或回复「批准」按默认）'
-      // sendDm 可能因 homeserver 限流/502 失败：绝不让单条请示 DM 的失败导致整个
-      // bridge 崩溃。失败时降级为「直接按原任务开工」（不阻塞任务执行）。
-      let dm: { roomId: string; eventId?: string } | undefined
-      try {
-        dm = await this.channel.sendDm?.(
-          this.owner,
-          `【任务请示】\n${ctx}\n工作内容：${task.text}\n角色：${role}\n${cwdLine}`,
-        )
-      } catch (error) {
-        this.ctx.logger.warn('[dsh-matrix-agent] clarification DM to owner failed (%s); proceeding without clarification', messageOf(error))
-        dm = undefined
-      }
-      if (dm !== undefined) {
-        // 秘书动作：记录时间线（仅元数据，actor=secretary）。
-        this.recordTimeline(dm.roomId, 'approval', { target: this.owner }, 0, 'secretary')
-        task.status = 'clarifying'
-        task.ownerDmRoomId = dm.roomId
-        task.role = role
-        this.persistTasks(roomId)
-        await this.pushTasks(roomId)
-        // 超时兜底：老板没回复 → 按原任务开始。
-        const timeout = this.config.taskClarifyTimeoutSecs ?? 120
-        setTimeout(() => {
-          const t = this.findTask(roomId, task.id)
-          if (t !== undefined && t.status === 'clarifying') {
-            t.status = 'approved'
-            t.note = '老板未在时限内回复，按原任务开工'
-            this.persistTasks(roomId)
-            void this.consumeNextTask(roomId)
-          }
-        }, timeout * 1000)
-        return
-      }
-    }
-    await this.startTaskExecution(roomId, task)
-  }
-
-  /** 实际开工：标记 approved/running 并把任务（含角色/老板指示）注入干活会话。 */
-  private async startTaskExecution(roomId: string, task: MatrixTask): Promise<void> {
-    this.ctx.logger.info('[dsh-matrix-agent] startTaskExecution room=%s task=%s', roomId, task.id)
-    task.status = 'approved'
-    this.runningTask.set(roomId, task.id)
-    this.persistTasks(roomId)
-    const ctxPrompt = await this.buildTaskPrompt(roomId, task)
-    this.ctx.logger.info('[dsh-matrix-agent] startTaskExecution prompt head=%s', ctxPrompt.slice(0, 120).replace(/\n/g, ' '))
-    await this.deliver(roomId, ctxPrompt, task.sender)
-    await this.pushTasks(roomId)
-  }
-
-  /** 构造任务注入文本：秘书模式（owner 已配置）加角色 + 工作方式 + 老板指示；否则原样注入。 */
-  private async buildTaskPrompt(roomId: string, task: MatrixTask): Promise<string> {
-    const body = task.contextPrompt !== undefined ? `${task.contextPrompt}\n\n${task.text}` : task.text
-    // 无 owner：非秘书模式，保持旧行为（直接任务内容）。
-    if (this.owner === undefined) return body
-    const role = this.roleForTask(roomId, task)
-    const rolePersona = rolePersonaFor(role)
-    // 工作目录 + 文件清单：让 agent 知道「去哪读原始数据、把结果写哪、发给谁」。
-    const cwd = this.state.roomCwd(roomId)
-    let workspaceGuide = ''
-    if (cwd !== undefined && cwd !== '' && existsSync(cwd)) {
-      let fileList = ''
-      try {
-        const entries = await readdir(cwd, { withFileTypes: true })
-        const files = entries.filter((e) => e.isFile()).map((e) => e.name)
-        if (files.length > 0) {
-          fileList = files.map((f) => `- ${f}`).join('\n')
-        }
-      } catch {
-        fileList = ''
-      }
-      workspaceGuide = [
-        '【工作目录】',
-        `你的工作目录是：${cwd}`,
-        fileList !== ''
-          ? `目录下已有这些文件：\n${fileList}`
-          : '目录下暂无文件，需要时可创建结果文件。',
-        '【读数据的方法】执行任务前，先调用 matrix_list_workspace_files 列出工作目录文件，',
-        '再用 matrix_read_workspace_file 读取需要的原始数据文件内容（如 bugs-raw.md、alerts-raw.md），',
-        '基于读取到的内容整理出结果。不要只凭记忆编造数据。',
-      ].join('\n')
-    }
-    const workStyle = [
-      '【工作方式】你是数字员工。',
-      `老板是 ${this.owner}（真实人）。`,
-      '- 开工前：若任务有歧义、需要优先级或资源，先私聊老板确认（matrix_send_dm 发给老板），再开工。',
-      '- 执行中：去【工作目录】读取原始数据文件，整理成结果（可写结果文件到该目录，或直接在回复里给出）。',
-      '- 完成后：先私聊老板汇报结果并请求确认（matrix_report_owner），老板确认后再在群里向同事交付（matrix_send_room_message）。',
-      '- 未经老板确认，不要直接在群里对外交付重要结果。',
-    ].join('\n')
-    const clarify = task.clarifyReply !== undefined && task.clarifyReply !== ''
-      ? `\n【老板开工指示】${task.clarifyReply}`
-      : ''
-    const roleLine = `\n【本次任务角色】${role}：${rolePersona}`
-    return `${roleLine}\n${workStyle}\n\n${workspaceGuide}\n\n【任务内容】\n${body}${clarify}`
-  }
-
-  /** 任务的执行角色：任务级 role > 房间固定角色 > 百变员工。 */
-  private roleForTask(roomId: string, task: MatrixTask): string {
-    if (task.role !== undefined && task.role !== '') return task.role
-    const roomRole = this.config.roomRoles?.[roomId]
-    if (roomRole !== undefined && roomRole !== '') return roomRole
-    return 'dynamic'
-  }
-
-  /** 候选工作目录：内核 workspaceRegistry 已登记的工作区 + 配置候选。 */
-  private async cwdCandidatesFor(roomId: string): Promise<string[]> {
-    const fromConfig = this.config.cwdCandidates.filter((c) => c !== undefined && c !== '')
-    const fromRegistry: string[] = []
-    try {
-      const registry = this.ctx.get('workspaceRegistry') as
-        | { list?: () => { path: string }[] }
-        | undefined
-      if (registry?.list !== undefined) {
-        for (const ws of registry.list()) fromRegistry.push(ws.path)
-      }
-    } catch {
-      /* 内核未提供 workspaceRegistry 时仅用配置候选 */
-    }
-    const set = new Set<string>([...fromRegistry, ...fromConfig, process.cwd()])
-    return [...set]
-  }
-
-  /** turn/end 后处理当前 running 任务：默认标记 done；若开启交付前确认则进入 confirming 私下请示老板。 */
-  private async consumeNextTask(roomId: string): Promise<void> {
-    try {
-      await this.consumeNextTaskInner(roomId)
-    } catch (error) {
-      // consumeNextTask 多处被 void 调用（turn/end 处理、超时兜底），任何未预期错误
-      // 都不能变成 unhandled rejection 导致 dsh fatal。记录后止损即可。
-      this.ctx.logger.error('[dsh-matrix-agent] consumeNextTask failed for room %s: %s', roomId, messageOf(error))
-    }
-  }
-
-  private async consumeNextTaskInner(roomId: string): Promise<void> {
-    const runningId = this.runningTask.get(roomId)
-    if (runningId !== undefined) {
-      const t = this.findTask(roomId, runningId)
-      if (t !== undefined) {
-        const needsConfirm = this.shouldConfirmTask(t)
-        if (needsConfirm) {
-          await this.confirmBeforeDeliver(roomId, t)
-          this.runningTask.delete(roomId)
-          return
-        }
-        t.status = 'done'
-        this.persistTasks(roomId)
-      }
-    }
-    this.runningTask.delete(roomId)
-    const next = this.tasksOf(roomId).find((t) => t.status === 'approved')
-    if (next !== undefined) await this.executeTask(roomId, next)
-  }
-
-  /** 是否需要对任务做交付前确认：开关开 + 有 owner + 不在豁免清单。 */
-  private shouldConfirmTask(task: MatrixTask): boolean {
-    if (this.config.taskConfirmBeforeDeliver === false) return false
-    if (this.owner === undefined) return false
-    const exempt = this.config.taskConfirmExemptMatters ?? []
-    if (exempt.some((m) => m !== '' && task.text.includes(m))) return false
-    return true
-  }
-
-  /** 交付前确认：秘书私下 DM 老板结果摘要，老板确认后交付回原房间，给意见则修订。 */
-  private async confirmBeforeDeliver(roomId: string, task: MatrixTask): Promise<void> {
-    const deliverTo = task.deliverTo ?? roomId
-    const ctx = await this.ownerDmContext(roomId, task.sender)
-    // sendDm 可能因 homeserver 限流/502 失败：降级为「直接交付」，绝不让单条 DM 失败崩溃 bridge。
-    let dm: { roomId: string; eventId?: string } | undefined
-    try {
-      dm = await this.channel.sendDm?.(
-        this.owner!,
-        `【交付确认】\n${ctx}\n工作内容：${task.text}\n完成情况：${task.result ?? '（已完成，结果见原房间）'}\n\n回复「交付」确认对外交付，或直接回复修改意见。`,
-      )
-    } catch (error) {
-      this.ctx.logger.warn('[dsh-matrix-agent] delivery-confirm DM to owner failed (%s); delivering directly', messageOf(error))
-      dm = undefined
-    }
-    if (dm === undefined) {
-      // 私聊失败：直接交付（降级）。
-      task.status = 'done'
-      task.note = '交付确认 DM 失败，直接交付'
-      this.persistTasks(roomId)
-      await this.safeSend(deliverTo, `✅ 任务完成：\n${task.text}`, undefined, 'reply', undefined, 'secretary')
+    // 批准/交付词 → 置位交付授权。
+    const approveWords = /^(批准|交付|开工|开始|ok|可以|yes|go|确认|通过|approve)$/i
+    if (approveWords.test(trimmed)) {
+      this.deliveryAuthorized.add(workRoomId)
+      this.ctx.logger.info('[dsh-matrix-agent] owner authorized delivery for room=%s (dm=%s)', workRoomId, dmRoomId)
+      await this.safeSend(dmRoomId, '✅ 已确认，可以交付。', undefined)
       return
     }
-    // 秘书动作：记录交付确认 DM（仅元数据，actor=secretary）。
-    this.recordTimeline(dm.roomId, 'approval', { target: this.owner! }, 0, 'secretary')
-    task.status = 'confirming'
-    task.ownerDmRoomId = dm.roomId
-    task.deliverTo = deliverTo
-    this.persistTasks(roomId)
-    await this.safeSend(roomId, '🔧 正在整理结果，稍后交付。', undefined, 'approval', undefined, 'secretary')
-    await this.pushTasks(roomId)
-    // 超时处理。
-    const timeout = this.config.taskConfirmTimeoutSecs ?? 600
-    const action = this.config.taskConfirmTimeoutAction ?? 'hold'
-    setTimeout(() => {
-      const t = this.findTask(roomId, task.id)
-      if (t === undefined || t.status !== 'confirming') return
-      if (action === 'deliver') {
-        t.status = 'done'
-        t.note = '老板超时未确认，自动交付'
-        this.persistTasks(roomId)
-        void this.safeSend(deliverTo, `✅ 任务完成：\n${t.text}`, undefined, 'reply', undefined, 'secretary')
-        void this.pushTasks(roomId)
-      } else if (action === 'cancel') {
-        t.status = 'rejected'
-        t.note = '老板超时未确认，任务取消'
-        this.persistTasks(roomId)
-        void this.safeSend(roomId, '🕐 老板超时未确认，任务已取消。', undefined)
-        void this.pushTasks(roomId)
-      }
-      // 'hold'：保持 confirming，群里已提示待确认。
-    }, timeout * 1000)
-  }
-
-  /** 老板确认交付：标记 done 并把结果交付回原房间。 */
-  private async deliverConfirmedTask(roomId: string, task: MatrixTask): Promise<void> {
-    task.status = 'done'
-    task.note = '老板已确认交付'
-    this.persistTasks(roomId)
-    const deliverTo = task.deliverTo ?? roomId
-    await this.safeSend(deliverTo, `✅ 任务完成：\n${task.text}\n${task.result ?? ''}`, undefined, 'reply', undefined, 'secretary')
-    await this.pushTasks(roomId)
-    await this.consumeNextTask(roomId)
-  }
-
-  /** 查找老板私聊房对应的任务（clarifying/confirming 状态）。 */
-  private findTaskByOwnerDm(dmRoomId: string): MatrixTask | undefined {
-    for (const [roomId, tasks] of this.matrixTasks) {
-      const found = tasks.find((t) =>
-        (t.status === 'clarifying' || t.status === 'confirming') &&
-        t.ownerDmRoomId === dmRoomId,
-      )
-      if (found !== undefined) return found
-    }
-    return undefined
-  }
-
-  /** 处理老板在私聊房的回复：澄清回复 → 开工指示/批准；确认回复 → 交付；其它 → 修改意见。多轮确认。 */
-  private async handleOwnerDmReply(dmRoomId: string, task: MatrixTask, reply: string): Promise<void> {
-    const workRoomId = task.roomId
-    if (task.status === 'clarifying') {
-      // 主人答复一个目录路径（绝对路径）→ 设工作目录 + 回写经验，然后开工。
-      const trimmed = reply.trim()
-      const pathLike = /^(?:用|使用|目录|在|到)?\s*([A-Za-z]:[\\/][^\s]*|(?:\/|~)[^\s]*)$/.exec(trimmed)
-      if (pathLike !== null && pathLike[1] !== undefined) {
-        const candidate = pathLike[1].replace(/^~/, process.env.USERPROFILE ?? process.env.HOME ?? '')
-        if (isAbsolute(candidate) && existsSync(candidate)) {
-          this.state.setRoomCwd(workRoomId, candidate)
-          const matter = this.classifyMatter(task.text)
-          if (matter !== '*' && matter !== '') this.state.setMatterCwd(matter, candidate)
-          await this.safeSend(dmRoomId, `✅ 已设定工作目录：${candidate}，开始执行任务。`, undefined)
-          await this.startTaskExecution(workRoomId, task)
-          return
-        }
-        await this.safeSend(dmRoomId, `⚠️ 目录不存在或不是绝对路径：${candidate}，请重新指定。`, undefined)
-        return
-      }
-      // 多轮确认：老板回「批准/开工/ok」→ 开工；否则记录指示，继续留在 clarifying（可继续补充）。
-      const startWords = /^(批准|开工|开始|ok|可以|yes|go)$/i
-      if (startWords.test(trimmed)) {
-        this.ctx.logger.info('[dsh-matrix-agent] owner approved room=%s task=%s, starting execution', workRoomId, task.id)
-        await this.safeSend(dmRoomId, `✅ 已批准，开始执行任务。`, undefined)
-        await this.startTaskExecution(workRoomId, task)
-        return
-      }
-      // 记录指示，留在 clarifying（多轮：老板可继续给要求，直到批准开工）。
-      task.clarifyReply = trimmed !== '' ? trimmed : task.clarifyReply
-      task.status = 'clarifying'
-      task.note = `老板指示（私聊）：${reply.slice(0, 40)}（可继续补充，或回复「批准」开工）`
-      this.persistTasks(workRoomId)
-      await this.safeSend(dmRoomId, `📝 已记录指示。你可以继续补充要求，或回复「批准」开工。`, undefined)
+    // 拒绝词 → 撤销授权。
+    const denyWords = /^(拒绝|驳回|no|reject|不行|不可以)$/i
+    if (denyWords.test(trimmed)) {
+      this.deliveryAuthorized.delete(workRoomId)
+      await this.safeSend(dmRoomId, '🚫 已拒绝，暂不交付。', undefined)
       return
     }
-    if (task.status === 'confirming') {
-      const confirmWords = /^(交付|可以|ok|确认|通过|yes|approve)$/i
-      if (confirmWords.test(reply.trim())) {
-        await this.safeSend(dmRoomId, '✅ 已确认，正在交付。', undefined)
-        await this.deliverConfirmedTask(workRoomId, task)
-        return
-      }
-      // 修改意见：注入干活会话让 agent 修订，再回到 confirming 等多轮确认。
-      task.confirmReply = reply
-      task.status = 'approved'
-      task.note = `老板修改意见：${reply.slice(0, 40)}，重新执行后再确认`
-      this.persistTasks(workRoomId)
-      await this.safeSend(dmRoomId, `🛠 已收到修改意见，重新执行后再确认。`, undefined)
-      await this.startTaskExecution(workRoomId, task)
-      return
-    }
-    // 其它状态：忽略（不进队列）。
+    // 其它：主人给了意见/指示，回一句已收到（agent 可继续请示或等进一步指示）。
+    await this.safeSend(dmRoomId, `📝 已收到您的意见：${trimmed.slice(0, 60)}`, undefined)
   }
 
   /** ---------- 命令 ---------- */
@@ -2187,45 +1647,11 @@ export class AccountBridge {
       }
       case '/tasks':
       case '/queue':
-        await this.showTasksDetail(roomId)
+      case '/approve':
+      case '/reject':
+        // 彻底分层后不再有任务队列（消息直接对话）。这些命令保留为友好提示。
+        await reply('任务队列已取消，现在直接对话即可。你可以直接说要我做什么，我会按工作流处理（必要时私下请示主人）。')
         break
-      case '/approve': {
-        if (arg === '') {
-          await reply('用法：`/approve <N>`（N 为 /tasks 列表中的序号）')
-          break
-        }
-        const n = Number.parseInt(arg, 10)
-        const tasks = this.tasksOf(roomId)
-        const pending = tasks.filter((t) => t.status === 'pending')
-        if (!Number.isInteger(n) || n < 1 || n > pending.length) {
-          await reply(`❌ 序号无效，当前待审 ${pending.length} 条（/tasks 查看）。`)
-          break
-        }
-        const task = pending[n - 1]
-        if (task === undefined) break
-        await this.executeTask(roomId, task)
-        break
-      }
-      case '/reject': {
-        if (arg === '') {
-          await reply('用法：`/reject <N>`')
-          break
-        }
-        const n = Number.parseInt(arg, 10)
-        const pending = this.tasksOf(roomId).filter((t) => t.status === 'pending')
-        if (!Number.isInteger(n) || n < 1 || n > pending.length) {
-          await reply(`❌ 序号无效，当前待审 ${pending.length} 条。`)
-          break
-        }
-        const task = pending[n - 1]
-        if (task === undefined) break
-        task.status = 'rejected'
-        task.note = `Owner 拒绝（${sender}）`
-        this.persistTasks(roomId)
-        await reply(`🚫 已拒绝第 ${n} 条任务。`)
-        await this.pushTasks(roomId)
-        break
-      }
       case '/allow':
       case '/deny': {
         const [person, ...matterParts] = arg.split(/\s+/)
@@ -2321,8 +1747,6 @@ export class AccountBridge {
            if (key.startsWith(`${roomId}:`)) this.toolNames.delete(key)
          }
          this.retryCounts.delete(roomId)
-         // 串行消费：前序任务结束后，执行下一条已批准任务（若有）。
-         void this.consumeNextTask(roomId)
          break
        }
        case 'tool/call': {
@@ -2413,8 +1837,13 @@ export class AccountBridge {
          break
        }
        case 'assistant/message': {
-         const text = assistantVisibleText(event as Extract<SessionEvent, { type: 'assistant/message' }>, verbosity)
-         if (text !== undefined) void this.deliverText(roomId, text)
+         // 彻底分层：数字分身（配置了 owner）的 assistant/message 是「内心独白/过程」，
+         // 不自动发群；对外发言必须由 agent 显式调用 matrix_send_room_message。
+         // 真人主助手（无 owner）保持原行为：assistant/message 直接发群。
+         if (this.owner === undefined || this.owner === '') {
+           const text = assistantVisibleText(event as Extract<SessionEvent, { type: 'assistant/message' }>, verbosity)
+           if (text !== undefined) void this.deliverText(roomId, text)
+         }
          break
        }
        default:
@@ -2497,82 +1926,20 @@ export class AccountBridge {
     }
   }
 
-  /** 执行秘书工作台操作（来自 UI，经 settings secretaryOps 传递；幂等：非目标状态忽略）。 */
+  /** 执行秘书工作台操作（彻底分层后仅保留有意义的动作：set-cwd / 交付授权）。 */
   handleSecretaryOps(ops: SecretaryOps): void {
-    const { taskId, action, text, cwd } = ops
-    // 全账号查找目标任务（共享任务快照按 roomId 分组，这里扫所有账号）。
-    for (const [roomId, tasks] of this.matrixTasks) {
-      const task = tasks.find((t) => t.id === taskId)
-      if (task === undefined) continue
-      this.diag.log(`handleSecretaryOps task=${taskId} action=${action} status=${task.status}`)
-      switch (action) {
-        case 'approve-start': {
-          // clarifying → 直接开工（不注入指示）。
-          if (task.status !== 'clarifying') return
-          task.clarifyReply = undefined
-          task.status = 'approved'
-          task.note = '老板批准开工（工作台）'
-          this.persistTasks(roomId)
-          void this.startTaskExecution(roomId, task)
-          return
-        }
-        case 'give-instruction': {
-          // clarifying → 记录指示，**回到 clarifying**（多轮确认：老板可继续补充/调整，直到「批准开工」）。
-          if (task.status !== 'clarifying' || text === undefined || text.trim() === '') return
-          task.clarifyReply = text.trim()
-          task.status = 'clarifying'
-          task.note = `老板指示（工作台）：${text.slice(0, 40)}（可继续补充，或点「批准开工」启动）`
-          this.persistTasks(roomId)
-          void this.pushTasks(roomId)
-          return
-        }
-        case 'confirm-deliver': {
-          // confirming → 交付回原房间。
-          if (task.status !== 'confirming') return
-          task.confirmReply = '交付'
-          void this.deliverConfirmedTask(roomId, task)
-          return
-        }
-        case 'give-feedback': {
-          // confirming → 记录意见，**回到 confirming 的修订流程**（多轮：重新执行后再确认）。
-          if (task.status !== 'confirming' || text === undefined || text.trim() === '') return
-          task.confirmReply = text.trim()
-          task.status = 'approved'
-          task.note = `老板修改意见（工作台）：${text.slice(0, 40)}，重新执行后再确认`
-          this.persistTasks(roomId)
-          void this.startTaskExecution(roomId, task)
-          return
-        }
-        case 'set-cwd': {
-          // 未设工作目录的任务 → 绑定工作目录（pending/clarifying 可设）。
-          if (cwd === undefined || cwd.trim() === '') return
-          if (task.status !== 'pending' && task.status !== 'clarifying') return
-          this.state.setRoomCwd(roomId, cwd.trim())
-          task.cwd = cwd.trim()
-          task.note = `工作目录：${cwd.trim()}`
-          this.persistTasks(roomId)
-          void this.pushTasks(roomId)
-          return
-        }
-        case 'approve': {
-          // pending → 批准执行（复用 /approve 语义）。
-          if (task.status !== 'pending') return
-          void this.executeTask(roomId, task)
-          return
-        }
-        case 'reject': {
-          // pending → 拒绝。
-          if (task.status !== 'pending') return
-          task.status = 'rejected'
-          task.note = '老板拒绝（工作台）'
-          this.persistTasks(roomId)
-          void this.pushTasks(roomId)
-          return
-        }
-        default:
-          return
-      }
+    const { action, cwd } = ops
+    // 彻底分层后无任务队列，工作台操作退化为「设置工作目录」「交付授权」两类简单动作。
+    if (action === 'set-cwd') {
+      if (cwd === undefined || cwd.trim() === '') return
+      // 对当前账号的所有已知房间设置工作目录（简化：作用于所有房间）。
+      this.state.setRoomCwd('*', cwd.trim())
+      this.diag.log(`handleSecretaryOps set-cwd=${cwd.trim()}`)
+      return
     }
+    // 其它动作（approve-start / give-instruction / confirm-deliver / give-feedback / approve / reject）
+    // 依赖已删除的任务队列状态机，彻底分层后由 agent 通过原子工具 + 主人私聊回复完成，这里静默忽略。
+    this.diag.log(`handleSecretaryOps action=${action} ignored (task queue removed)`)
   }
 
   /** ---------- 审批（三级授权） ---------- */
@@ -2601,12 +1968,15 @@ export class AccountBridge {
       this.diag.log(`approveProactiveSend tool=${toolName} no room to push approval; deny`)
       return false
     }
-    // 秘书编排豁免：该房间有 running 任务（老板已批准执行）时，agent 执行过程中
-    // 用 matrix_send_room_message 交付结果属于「已批准任务的一部分」，不再单独审批。
-    // 否则主动发送审批会因 turn 结束 signal abort 被取消，导致任务永远无法交付。
-    if (toolName === 'matrix_send_room_message' && this.runningTask.has(roomId)) {
-      this.diag.log(`approveProactiveSend tool=${toolName} room=${roomId} running task; allow (part of approved task)`)
-      return true
+    // 彻底分层红线：数字分身（有 owner）对外发言 matrix_send_room_message 时，
+    // 若主人不在场且未获交付授权，拒绝并提示先 matrix_report_owner 等主人确认。
+    // 这是「交付物先私发主人→确认后发群」的兜底，防 agent 跳过 skill 流程直接发群。
+    if (toolName === 'matrix_send_room_message' && this.owner !== undefined && this.owner !== '') {
+      const ownerAbsent = (await this.isOwnerInRoom(roomId)) === false
+      if (ownerAbsent && !this.deliveryAuthorized.has(roomId)) {
+        this.diag.log(`approveProactiveSend tool=${toolName} room=${roomId} owner absent & not delivery-authorized; deny`)
+        return false
+      }
     }
     if (!this.isRedline(toolName) && this.authStore.isStandingAuthorized(this.userId, roomId, toolName, this.config.redlineTools ?? [])) {
       this.diag.log(`approveProactiveSend tool=${toolName} room=${roomId} standing auth; allow`)
