@@ -1,13 +1,25 @@
+# 依赖与构建产物
 node_modules/
 lib/
-.dsh-matrix/
+test-system/lib/
 *.tsbuildinfo
+
+# 运行态数据（桥接状态、聊天记录、媒体、时间线、诊断日志）
+.dsh-matrix/
 *.log
+
+# 工具链残留
 .codebuddy/
+*.tgz
+
 # 本包用 pnpm 管理依赖（pnpm-lock.yaml）；package-lock.json 是 npm 的冗余锁文件，不跟踪。
 package-lock.json
 
-*.tgz
-
-# 本地环境配置含真实 token，不入库
+# 本地环境配置（含真实 Matrix token），不入库
+.env
 test-system/.env
+
+# 备份文件
+*.bak
+*.dirty-bak-*
+*.lock
