@@ -73,6 +73,16 @@ export class BossAgent {
 
   private async poll(): Promise<void> {
     try {
+      // 先接受所有待处理邀请（数字人 sendDm 会 create-room + invite 老板，
+      // 不接受则 joinedRooms 永远看不到请示房，导致请示无人批准）。
+      try {
+        const invited = await this.client.invitedRooms()
+        for (const roomId of invited) {
+          await this.client.joinRoom(roomId)
+          console.log(`[boss] 已加入邀请房 ${roomId}`)
+        }
+      } catch { /* 邀请查询/接受失败忽略，下一轮重试 */ }
+
       const rooms = await this.client.joinedRooms()
       for (const roomId of rooms) {
         try {

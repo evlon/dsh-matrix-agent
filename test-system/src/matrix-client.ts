@@ -120,6 +120,23 @@ export class MatrixClient {
     return data.joined_rooms ?? []
   }
 
+  /** 收到邀请但尚未加入的房间列表（用 /sync 拿 rooms.invite）。 */
+  async invitedRooms(): Promise<string[]> {
+    const data = await this.json<{ rooms?: { invite?: Record<string, unknown> } }>(
+      `${this.baseUrl}/_matrix/client/v3/sync?timeout=0`,
+      { headers: this.headers() },
+    )
+    return Object.keys(data.rooms?.invite ?? {})
+  }
+
+  /** 接受邀请加入房间。 */
+  async joinRoom(roomId: string): Promise<void> {
+    await this.json<{ room_id?: string }>(
+      `${this.baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/join`,
+      { method: 'POST', headers: { ...this.headers(), 'Content-Type': 'application/json' }, body: '{}' },
+    )
+  }
+
   /** 房间成员 userId 列表。 */
   async getRoomMembers(roomId: string): Promise<string[]> {
     const data = await this.json<{ joined?: Record<string, unknown> }>(
