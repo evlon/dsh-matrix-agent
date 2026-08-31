@@ -734,8 +734,28 @@ export class AccountBridge {
     return promise
   }
 
+  /** 取 workspaceRegistry 里主人注册的第一个工作区路径（无则 undefined）。 */
+  private async registryFirstCwd(): Promise<string | undefined> {
+    try {
+      const registry = this.ctx.get('workspaceRegistry') as
+        | { list?: () => { path: string }[] }
+        | undefined
+      if (registry?.list !== undefined) {
+        for (const ws of registry.list()) {
+          if (ws.path !== undefined && ws.path !== '') return ws.path
+        }
+      }
+    } catch {
+      /* 内核未提供 workspaceRegistry 时返回 undefined */
+    }
+    return undefined
+  }
+
   private async createRoomAgent(roomId: string): Promise<Agent> {
-    const cwd = this.state.roomCwd(roomId) ?? (this.config.cwdCandidates ?? [])[0] ?? process.cwd()
+    // 工作目录优先级：房间已绑定 cwd > workspaceRegistry 首个工作区 > 配置候选 > process.cwd()。
+    // workspaceRegistry 是主人注册的工作区（含 ai-test-data 等），是 agent 的合理默认落点。
+    const registryCwd = await this.registryFirstCwd()
+    const cwd = this.state.roomCwd(roomId) ?? registryCwd ?? (this.config.cwdCandidates ?? [])[0] ?? process.cwd()
 
     let handle: AgentHandle | undefined
     const bindingId = this.state.roomSession(roomId)
