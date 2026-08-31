@@ -1845,6 +1845,9 @@ export class AccountBridge {
            const isError = data.message?.content?.[0]?.isError === true
            if (!isError) break
          }
+         // 彻底分层：数字分身（有 owner）的工具结果（含错误）是 agent 内部过程，
+         // 不自动发群；只有 agent 显式 matrix_send_room_message 才对外发言。
+         if (this.owner !== undefined && this.owner !== '') break
          const callId = (data.message?.source?.callId as string) ?? ''
          const name = callId !== '' ? (this.toolNames.get(`${roomId}:${callId}`) ?? '') : ''
          const result = formatToolResult(
