@@ -486,8 +486,10 @@ export class Orchestrator {
   ): Promise<void> {
     const asserts = def.asserts ?? []
     const ctx: AssertContext = {
-      roomId: room.roomId,
-      events: this.bus.recent(2000).filter((e) => e.roomId === room.roomId),
+      // 用 state.roomId（真实 Matrix 房间 id）过滤事件：emit 用的是 state.roomId，
+      // 而 room.roomId 是占位 id（room-xxx），两者永不相等会导致断言统计恒为 0。
+      roomId: state.roomId,
+      events: this.bus.recent(2000).filter((e) => e.roomId === state.roomId),
       twinMessages: 0,
       colleagueMessages: 0,
       rounds: round,
