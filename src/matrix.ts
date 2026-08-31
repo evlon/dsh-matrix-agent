@@ -279,10 +279,24 @@ export class MatrixChannel implements Channel {
     url.searchParams.set('filter', SYNC_FILTER)
     const since = this.options.state.syncToken
     if (since !== undefined) url.searchParams.set('since', since)
-    const response = await this.fetchFn(url, {
+    // 硬超时兜底：某些宿主运行时（dsh 进程）下 fetch 可能无视 AbortSignal 而挂起，
+    // 用 Promise.race 确保请求绝不会无限阻塞 syncLoop；超时即抛错触发退避重试。
+    const fetchPromise = this.fetchFn(url, {
       headers: { Authorization: `Bearer ${this.options.accessToken}` },
       signal,
     })
+    const timeoutMs = SYNC_TIMEOUT_MS + 20_000
+    const response = await Promise.race([
+      fetchPromise,
+      new Promise<never>((_resolve, reject) => {
+        const timer = setTimeout(() => {
+          this.options.logger?.warn('[dsh-matrix-agent] sync hard-timeout after %dms (fetch may have ignored AbortSignal)', timeoutMs)
+          reject(new Error(`sync hard-timeout after ${timeoutMs}ms`))
+        }, timeoutMs)
+        // 定时器随正常完成清理，避免泄漏。
+        fetchPromise.then(() => clearTimeout(timer), () => clearTimeout(timer))
+      }),
+    ])
     if (!response.ok) throw new Error(`sync HTTP ${response.status}`)
     const data = (await response.json()) as SyncResponse
     if (typeof data.next_batch === 'string') this.options.state.syncToken = data.next_batch
