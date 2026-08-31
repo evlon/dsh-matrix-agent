@@ -230,7 +230,11 @@
       card.className = 'owner-item'
       const t = new Date(item.ts).toLocaleTimeString('zh-CN', { hour12: false })
       const kindLabel = item.kind === 'clarify' ? '🤔 请示' : item.kind === 'confirm' ? '🔐 待确认' : '📊 汇报'
-      const body = `<div class="owner-item-head">${kindLabel}<span class="time">${t}</span></div><pre class="owner-item-text">${esc(item.text)}</pre>`
+      // 主人回复回显：有 reply 就显示「主人回复：xxx」，否则显示「待答复」。
+      const replyLine = item.reply
+        ? `<div class="owner-reply">👔 主人回复：<b>${esc(item.reply)}</b></div>`
+        : '<div class="owner-reply pending">👔 待答复…</div>'
+      const body = `<div class="owner-item-head">${kindLabel}<span class="time">${t}</span></div><pre class="owner-item-text">${esc(item.text)}</pre>${replyLine}`
       card.innerHTML = body
       if (ownerModeEl.value === 'manual') {
         const replyBar = document.createElement('div')

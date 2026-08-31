@@ -123,14 +123,17 @@ export class BossAgent {
       // 忽略老板代理启动之前的历史消息：否则会重放历史 DM 房里的旧请示，
       // 对已经不存在的任务重复批准。
       if (msg.timestamp < this.startedAt) continue
-      // 找数字人的消息：数字人 id 未知时按内容特征（【任务请示】【交付确认】）。
+      // 找数字人的消息：数字人 id 未知时按内容特征识别。
+      // 彻底分层后：matrix_request_owner_decision 发「【任务请示】」，
+      // matrix_report_owner 发「【进度汇报】」。前者请示开工，后者汇报结果等交付。
       const text = msg.body
-      if (!text.includes('【任务请示】') && !text.includes('【交付确认】')) continue
+      const isClarify = text.includes('【任务请示】')
+      const isReport = text.includes('【进度汇报】')
+      if (!isClarify && !isReport) continue
       const dedupKey = `${roomId}:${msg.eventId}`
       if (this.seenEvents.has(dedupKey)) continue
       this.seenEvents.add(dedupKey)
 
-      const isClarify = text.includes('【任务请示】')
       const kind = isClarify ? 'clarify' as const : 'confirm' as const
       const reply = isClarify ? '批准' : '交付'
 
@@ -144,14 +147,14 @@ export class BossAgent {
       if (!this.autoApprove) {
         // 真人驱动：停在主人区域，等真人点「批准/指定目录」后经 control 回写。
         this.inbox.push({ roomId, text, kind })
-        console.log(`[boss] 收到数字人${kind === 'clarify' ? '请示' : '确认'}，等待真人答复（真人驱动模式）`)
+        console.log(`[boss] 收到数字人${kind === 'clarify' ? '请示' : '汇报'}，等待真人答复（真人驱动模式）`)
         continue
       }
       // AI 驱动：自动回复。
       try {
         await this.client.sendText(roomId, reply)
         this.dmEvents.push({ roomId, ts: Date.now(), text, reply, kind })
-        console.log(`[boss] 收到数字人${kind === 'clarify' ? '请示' : '确认'}，已回复「${reply}」`)
+        console.log(`[boss] 收到数字人${kind === 'clarify' ? '请示' : '汇报'}，已回复「${reply}」`)
       } catch (error) {
         console.error(`[boss] 回复失败: ${error instanceof Error ? error.message : String(error)}`)
       }
