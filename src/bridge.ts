@@ -668,9 +668,18 @@ export class AccountBridge {
     }
   }
 
+  /** 解析工作目录：房间绑定 cwd > workspaceRegistry 首个工作区。list/read 工具用。 */
+  private async resolveWorkspaceCwd(roomId: string): Promise<string | undefined> {
+    const bound = this.state.roomCwd(roomId)
+    if (bound !== undefined && bound !== '' && existsSync(bound)) return bound
+    const registryCwd = await this.registryFirstCwd()
+    if (registryCwd !== undefined && registryCwd !== '' && existsSync(registryCwd)) return registryCwd
+    return bound
+  }
+
   /** 原子工具：列出当前会话工作目录下的文件。 */
   private async listWorkspaceFilesAtomic(roomId: string): Promise<Array<{ name: string; kind: 'file' | 'dir' }>> {
-    const cwd = this.state.roomCwd(roomId)
+    const cwd = await this.resolveWorkspaceCwd(roomId)
     if (cwd === undefined || cwd === '' || !existsSync(cwd)) {
       throw new Error(`工作目录未设定或不存在（${cwd ?? '(未设定)'}），先用 matrix_set_room_cwd 设定`)
     }
@@ -684,7 +693,7 @@ export class AccountBridge {
 
   /** 原子工具：读取工作目录下某文件的文本内容。 */
   private async readWorkspaceFileAtomic(roomId: string, filename: string): Promise<{ filename: string; content: string }> {
-    const cwd = this.state.roomCwd(roomId)
+    const cwd = await this.resolveWorkspaceCwd(roomId)
     if (cwd === undefined || cwd === '' || !existsSync(cwd)) {
       throw new Error(`工作目录未设定或不存在（${cwd ?? '(未设定)'}），先用 matrix_set_room_cwd 设定`)
     }
@@ -2017,14 +2026,18 @@ export class AccountBridge {
       return false
     }
     // 彻底分层红线：数字分身（有 owner）对外发言 matrix_send_room_message 时，
-    // 若主人不在场且未获交付授权，拒绝并提示先 matrix_report_owner 等主人确认。
-    // 这是「交付物先私发主人→确认后发群」的兜底，防 agent 跳过 skill 流程直接发群。
+    // 只受「交付授权」门控（先 matrix_report_owner 等主人「交付」），不再走
+    // proactiveSend 审批（那是真人主助手主动发言的机制）。这是「交付物先私发主人
+    // →确认后发群」的兜底，防 agent 跳过 skill 流程直接发群。
     if (toolName === 'matrix_send_room_message' && this.owner !== undefined && this.owner !== '') {
       const ownerAbsent = (await this.isOwnerInRoom(roomId)) === false
       if (ownerAbsent && !this.deliveryAuthorized.has(roomId)) {
         this.diag.log(`approveProactiveSend tool=${toolName} room=${roomId} owner absent & not delivery-authorized; deny`)
         return false
       }
+      // 已获授权（或主人在场）：放行，不再走 proactiveSend 审批。
+      this.diag.log(`approveProactiveSend tool=${toolName} room=${roomId} delivery-authorized (or owner present); allow`)
+      return true
     }
     if (!this.isRedline(toolName) && this.authStore.isStandingAuthorized(this.userId, roomId, toolName, this.config.redlineTools ?? [])) {
       this.diag.log(`approveProactiveSend tool=${toolName} room=${roomId} standing auth; allow`)
