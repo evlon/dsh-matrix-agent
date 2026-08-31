@@ -41,6 +41,7 @@ export const MATRIX_TOOL_NAMES = {
   REQUEST_OWNER_DECISION: 'matrix_request_owner_decision',
   REPORT_OWNER: 'matrix_report_owner',
   LIST_WORKSPACE_FILES: 'matrix_list_workspace_files',
+  READ_WORKSPACE_FILE: 'matrix_read_workspace_file',
 } as const
 
 export type MatrixToolName = typeof MATRIX_TOOL_NAMES[keyof typeof MATRIX_TOOL_NAMES]
@@ -88,6 +89,11 @@ export interface MatrixToolDeps {
    * agent 执行任务时据此发现原始数据文件（如 bugs-raw.md）并读取整理。
    */
   listWorkspaceFiles?: (roomId: string) => Promise<Array<{ name: string; kind: 'file' | 'dir' }>>
+  /**
+   * 原子工具：读取当前会话工作目录下某文件的文本内容（UTF-8）。
+   * 这是「读原始数据」的最小原子动作，让 agent 不依赖 bash/fs 也能读文件。
+   */
+  readWorkspaceFile?: (roomId: string, filename: string) => Promise<{ filename: string; content: string }>
 }
 
 /** 根据显式 roomId 或当前 agent 绑定的房间，解析实际的 roomId。 */
@@ -857,6 +863,45 @@ function makeListWorkspaceFilesTool(deps: MatrixToolDeps) {
   })
 }
 
+/**
+ * 原子工具：读取工作目录下某文件的文本内容。让 agent 不依赖 bash/fs 也能读原始数据。
+ */
+function makeReadWorkspaceFileTool(deps: MatrixToolDeps) {
+  return defineTool({
+    name: MATRIX_TOOL_NAMES.READ_WORKSPACE_FILE,
+    description: '读取当前会话工作目录下指定文件的文本内容（UTF-8）。配合 matrix_list_workspace_files 使用：先列出文件，再读需要的原始数据文件内容，用于整理任务。',
+    parameters: {
+      roomId: {
+        type: 'string',
+        description: 'Matrix 房间 ID，可选；不传则使用当前会话绑定的房间',
+      },
+      filename: {
+        type: 'string',
+        required: true,
+        description: '要读取的文件名（相对工作目录，如 bugs-raw.md）',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        properties: {
+          filename: { type: 'string' },
+          content: { type: 'string' },
+        },
+        additionalProperties: false,
+      } as const,
+      render: renderResult,
+    },
+    async execute(args, exec) {
+      const roomId = resolveRoomId(args, exec, deps)
+      const filename = args.filename
+      if (typeof filename !== 'string' || filename.trim() === '') throw new Error('filename 不能为空')
+      if (deps.readWorkspaceFile === undefined) throw new Error('工作目录文件读取服务不可用')
+      return deps.readWorkspaceFile(roomId, filename.trim())
+    },
+  })
+}
+
 /** 将 Matrix 工具通过 ctx.tools.register() 注册到 ToolRuntime（全局 layer）。
  * 必须在 agent factory 的 `setup` 或 host apply 中由 plugin ctx 调用。
  * 注册后即对所有 agent 可见，模型既能看见 schema 也能直接调用执行体。
@@ -885,6 +930,7 @@ export function applyMatrixTools(ctx: Context, deps: MatrixToolDeps): void {
     makeRequestOwnerDecisionTool(deps),
     makeReportOwnerTool(deps),
     makeListWorkspaceFilesTool(deps),
+    makeReadWorkspaceFileTool(deps),
   ]
 
   for (const tool of tools) {

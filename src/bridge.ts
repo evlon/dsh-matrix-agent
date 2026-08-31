@@ -10,7 +10,7 @@
 
 import { join, isAbsolute } from 'node:path'
 import { existsSync } from 'node:fs'
-import { mkdir, writeFile, readdir } from 'node:fs/promises'
+import { mkdir, writeFile, readdir, readFile } from 'node:fs/promises'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle, AgentOptions } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -478,6 +478,7 @@ export class AccountBridge {
         requestOwnerDecision: (roomId: string, question: string) => this.requestOwnerDecisionAtomic(roomId, question),
         reportOwner: (roomId: string, summary: string) => this.reportOwnerAtomic(roomId, summary),
         listWorkspaceFiles: (roomId: string) => this.listWorkspaceFilesAtomic(roomId),
+        readWorkspaceFile: (roomId: string, filename: string) => this.readWorkspaceFileAtomic(roomId, filename),
         queryTimeline: (filter) => {
           const f = filter as { roomId?: string; kind?: string; actor?: string; limit?: number; since?: number }
           const kinds: TimelineKind[] = ['reply', 'tool-call', 'proactive', 'self-intro', 'approval', 'task']
@@ -673,6 +674,23 @@ export class AccountBridge {
       return entries.map((e) => ({ name: e.name, kind: e.isDirectory() ? 'dir' as const : 'file' as const }))
     } catch (error) {
       throw new Error(`读取工作目录失败：${messageOf(error)}`)
+    }
+  }
+
+  /** 原子工具：读取工作目录下某文件的文本内容。 */
+  private async readWorkspaceFileAtomic(roomId: string, filename: string): Promise<{ filename: string; content: string }> {
+    const cwd = this.state.roomCwd(roomId)
+    if (cwd === undefined || cwd === '' || !existsSync(cwd)) {
+      throw new Error(`工作目录未设定或不存在（${cwd ?? '(未设定)'}），先用 matrix_set_room_cwd 设定`)
+    }
+    // 安全：拒绝路径穿越（只允许工作目录内的相对文件名）。
+    const target = join(cwd, filename)
+    if (!target.startsWith(cwd)) throw new Error(`非法文件名：${filename}`)
+    try {
+      const content = await readFile(target, 'utf8')
+      return { filename, content }
+    } catch (error) {
+      throw new Error(`读取文件失败：${messageOf(error)}`)
     }
   }
 
@@ -1853,8 +1871,11 @@ export class AccountBridge {
         '【工作目录】',
         `你的工作目录是：${cwd}`,
         fileList !== ''
-          ? `目录下已有这些文件（可用 read_file / 文件工具读取后整理）：\n${fileList}`
+          ? `目录下已有这些文件：\n${fileList}`
           : '目录下暂无文件，需要时可创建结果文件。',
+        '【读数据的方法】执行任务前，先调用 matrix_list_workspace_files 列出工作目录文件，',
+        '再用 matrix_read_workspace_file 读取需要的原始数据文件内容（如 bugs-raw.md、alerts-raw.md），',
+        '基于读取到的内容整理出结果。不要只凭记忆编造数据。',
       ].join('\n')
     }
     const workStyle = [
