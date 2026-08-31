@@ -1,6 +1,6 @@
 {
   "name": "dsh-matrix-agent",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Matrix agent bridge for DeepSeek Harness (dsh): multi-twin per-room agent sessions, in-chat approval, media/rich-text/reply/edit-aware message intake",
   "license": "MIT",
   "type": "module",
