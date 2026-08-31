@@ -192,20 +192,14 @@ test('multi-account + owner auth: twin approval, auth commands, routing', async 
     assert.ok(twinMsg, 'twin should have been the only responder')
     captured.messages.length = 0
 
-    // 2.5) 分身群聊默认秘书：未 @ 提及的群聊消息进任务队列（不直接注入 agent 回复）
-    // 群里只回中性「收到」，不暴露待审/请示/任务原文（隐私语义）。
-    hs.deliver([textEvent('$t2', '帮我整理一下明天的会议纪要', SENDER)])
-    await waitFor(() => hs.sends.some((s) => s.body.body?.includes('收到')), 'twin group message queued as secretary task')
-    assert.equal(captured.messages.length, 0, 'no direct agent injection for unmentioned group message')
-    const queued = hs.sends.find((s) => s.body.body?.includes('收到'))
-    assert.ok(queued, 'queued task acked neutrally in group')
-    // 群里不应泄露任务原文或待审字样
-    assert.ok(!queued.body.body.includes('待审'), 'group ack must not leak pending status')
-    assert.ok(!queued.body.body.includes('会议纪要'), 'group ack must not leak task text')
-    // 清理：拒绝该任务，避免影响后续断言
-    hs.deliver([textEvent('$t3', '/reject 1', OWNER_ID)])
-    await waitFor(() => hs.sends.some((s) => s.body.body?.includes('已拒绝')), 'owner rejects queued task')
+    // 2.5) 彻底分层：分身收到未 @ 的群聊消息 → 直接注入 agent（不再进任务队列）。
+    // 群里不发「待审/请示」等字样（隐私语义由出站分流 + skill 保证）。
+    hs.deliver([textEvent('$t2', '帮我整理一下明天的会议纪要!!', SENDER)])
+    await waitFor(() => captured.messages.length === 1, 'twin group message injected to agent (no task queue)')
+    // 注入的消息应含群聊上下文标签 + 原文。
+    assert.match(captured.messages[0].content[0].text, /\n帮我整理一下明天的会议纪要$/, 'group message injected directly')
     hs.sends.length = 0
+    captured.messages.length = 0
 
     // 3) 分身工具请求 → 房间推送审批
     const twinAgentId = captured.agents[1].agent.id

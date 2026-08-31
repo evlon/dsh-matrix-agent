@@ -577,13 +577,12 @@ export class AccountBridge {
       this.diag.log('  -> group-respondToAll-branch: respond=true')
       return true
     }
-    // 群聊默认秘书（数字分身账号）：未 @ 的群聊消息也放行进后续流程（由 isTwinMode 决定
-    // 是否进任务队列；私聊或 @ 提及仍按原逻辑）。避免工作任务被 shouldRespond 提前过滤。
-    // 数字分身判定：配置了 owner 即视为分身（而非 isMain——单账号进程登录分身账号时 isMain=true）。
+    // 数字分身（配置了 owner）在群聊里：未 @ 自己的群聊消息也放行进后续流程，
+    // 直接注入 agent，由 agent 按 skill 决定是否请示主人、如何回应。
     if (this.config.secretaryGroupDefault !== false && this.owner !== undefined && this.owner !== '') {
       const dm = this.channel.isDirectRoom ? await this.channel.isDirectRoom(message.roomId) : false
       if (!dm) {
-        this.diag.log('  -> group-secretary-branch: respond=true (queue gate)')
+        this.diag.log('  -> group-secretary-branch: respond=true (inject to agent)')
         return true
       }
     }
