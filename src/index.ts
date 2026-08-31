@@ -51,22 +51,40 @@ export const name = 'matrix-agent'
 export const inject = ['agents', 'tools', 'settings']
 
 export function apply(ctx: Context, config: MatrixConfig): void {
+  // 关键连接参数校验：缺失时不 throw（保持插件存活，设置页可用），仅禁用 Matrix 桥；
+  // 用户在浏览器设置好参数后（settings live 更新）自动恢复连接。
+  const missing: string[] = []
+  if (config.homeserverUrl === undefined || config.homeserverUrl === '') missing.push('homeserverUrl')
+  if (config.userId === undefined || config.userId === '') missing.push('userId')
   const token = config.accessToken === '' ? process.env.DSH_MATRIX_TOKEN : config.accessToken
-  if (token === undefined || token === '') {
-    throw new Error('[dsh-matrix-agent] missing bot access token (set config.accessToken or DSH_MATRIX_TOKEN)')
-  }
-  if (config.allowedUserIds.length === 0 && !config.allowAllUsers) {
+  if (token === undefined || token === '') missing.push('accessToken / DSH_MATRIX_TOKEN')
+  if (missing.length > 0) {
+    ctx.logger.warn('[dsh-matrix-agent] incomplete config, Matrix bridge disabled: missing %s (插件保持运行，请在设置页配置后自动恢复)', missing.join(', '))
+  } else if (config.allowedUserIds.length === 0 && !config.allowAllUsers) {
     ctx.logger.warn('[dsh-matrix-agent] no allowlist configured: all inbound messages will be rejected (fail closed)')
   }
   // 设置层 merge：settings 用户层覆盖 yml config（若 settings 服务可用）。
   // onTimelineOps 经引用转发：bridge 创建后把管理命令分发到账号，再清零命令字段。
   let bridgeRef: MatrixBridge | undefined
+  let bridgeDisposer: (() => void) | undefined
   const settingsHandle = registerMatrixSettings(ctx, config, {
     onTimelineOps: (ops: TimelineOps) => {
       bridgeRef?.handleTimelineOps(ops)
     },
     onSecretaryOps: (ops: SecretaryOps) => {
       bridgeRef?.handleSecretaryOps(ops)
+    },
+    // 配置 live 变化（含 token 从缺到有）：驱动 bridge 动态启停，无需重启。
+    onConfigChange: (merged: MatrixConfig) => {
+      const tok = merged.accessToken === '' ? process.env.DSH_MATRIX_TOKEN : merged.accessToken
+      const ready = tok !== undefined && tok !== '' && merged.homeserverUrl !== '' && merged.userId !== ''
+      if (ready && bridgeRef === undefined) {
+        ctx.logger.info('[dsh-matrix-agent] config complete, starting Matrix bridge')
+        startBridge(merged, tok as string)
+      } else if (!ready && bridgeRef !== undefined) {
+        ctx.logger.warn('[dsh-matrix-agent] config became incomplete, stopping Matrix bridge (设置页可继续配置)')
+        stopBridge()
+      }
     },
   })
   const mergedConfig: MatrixConfig = settingsHandle.getMerged()
@@ -88,24 +106,49 @@ export function apply(ctx: Context, config: MatrixConfig): void {
       'utf8',
     )
   } catch { /* 忽略 */ }
-  const twins: DigitalTwinAccount[] = mergedConfig.digitalTwinMode ? (mergedConfig.digitalTwins ?? []) : []
-  const bridge = new MatrixBridge(ctx, {
-    ...mergedConfig,
-    accessToken: token,
-    digitalTwins: twins,
-    soulHandle,
-    updateTasksSnapshot: settingsHandle.updateTasksSnapshot,
-    updateTimelineSnapshot: settingsHandle.updateTimelineSnapshot,
-    onTimelineOpsHandled: settingsHandle.clearTimelineOps,
-    onSecretaryOpsHandled: settingsHandle.clearSecretaryOps,
-  })
-  bridgeRef = bridge
+
+  function startBridge(cfg: MatrixConfig, tok: string): void {
+    const twins: DigitalTwinAccount[] = cfg.digitalTwinMode ? (cfg.digitalTwins ?? []) : []
+    const bridge = new MatrixBridge(ctx, {
+      ...cfg,
+      accessToken: tok,
+      digitalTwins: twins,
+      soulHandle,
+      updateTasksSnapshot: settingsHandle.updateTasksSnapshot,
+      updateTimelineSnapshot: settingsHandle.updateTimelineSnapshot,
+      onTimelineOpsHandled: settingsHandle.clearTimelineOps,
+      onSecretaryOpsHandled: settingsHandle.clearSecretaryOps,
+    })
+    bridgeRef = bridge
+    bridgeDisposer = ctx.effect(() => {
+      void bridge.start()
+      return () => {
+        void bridge.stop()
+      }
+    }, 'matrix-agent.serve')
+  }
+
+  function stopBridge(): void {
+    if (bridgeDisposer !== undefined) {
+      bridgeDisposer()
+      bridgeDisposer = undefined
+    }
+    bridgeRef = undefined
+  }
+
+  // 初次启动：配置完整则直接起桥；否则保持插件存活（设置页可配置）。
+  const initToken = mergedConfig.accessToken === '' ? process.env.DSH_MATRIX_TOKEN : mergedConfig.accessToken
+  if (initToken !== undefined && initToken !== '' && mergedConfig.homeserverUrl !== '' && mergedConfig.userId !== '') {
+    startBridge(mergedConfig, initToken)
+  } else {
+    ctx.logger.warn('[dsh-matrix-agent] Matrix bridge not started: 配置不完整（缺 token/连接参数），插件保持运行，请在「数字分身」设置页配置后自动恢复。')
+  }
+
   ctx.effect(() => {
-    void bridge.start()
     return () => {
-      void bridge.stop()
+      stopBridge()
       soulHandle.dispose()
       settingsHandle.dispose()
     }
-  }, 'matrix-agent.serve')
+  }, 'matrix-agent.teardown')
 }

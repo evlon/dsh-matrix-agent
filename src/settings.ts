@@ -235,10 +235,11 @@ function pickMatrixBase(config: Config): Record<string, unknown> {
 export function registerMatrixSettings(
   ctx: Context,
   config: Config,
-  options?: { onTimelineOps?: (ops: TimelineOps) => void; onSecretaryOps?: (ops: SecretaryOps) => void },
+  options?: { onTimelineOps?: (ops: TimelineOps) => void; onSecretaryOps?: (ops: SecretaryOps) => void; onConfigChange?: (merged: Config) => void },
 ): { merged: Config; dispose: () => void; getMerged: () => Config; updateTasksSnapshot: (snapshot: TasksSnapshot) => void; updateTimelineSnapshot: (snapshot: { entries: unknown[]; updatedAt: number }) => void; clearTimelineOps: () => void; clearSecretaryOps: () => void } {
   const onTimelineOps = options?.onTimelineOps
   const onSecretaryOps = options?.onSecretaryOps
+  const onConfigChange = options?.onConfigChange
   let current = config
   const disposers: Array<() => void> = []
   let snapshotScope: { update(patch: object): Promise<void> } | undefined
@@ -324,6 +325,8 @@ export function registerMatrixSettings(
       }), { applies: 'live', base: pickMatrixBase(config) })
       const applyUser = (user: unknown): void => {
         current = mergeMatrixConfig(config, (user ?? {}) as Record<string, unknown>)
+        // 配置变化通知（供 index.ts 驱动 bridge 启停：token 缺失时保持插件存活，配置好后自动恢复）。
+        if (onConfigChange !== undefined) onConfigChange(current)
         // 检测时间线管理命令（Client→Host）。
         const ops = (user as Record<string, unknown> | undefined)?.timelineOps as TimelineOps | undefined
         if (ops !== undefined && onTimelineOps !== undefined) {
