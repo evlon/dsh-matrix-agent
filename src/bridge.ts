@@ -2033,7 +2033,8 @@ export class AccountBridge {
       const ownerAbsent = (await this.isOwnerInRoom(roomId)) === false
       if (ownerAbsent && !this.deliveryAuthorized.has(roomId)) {
         this.diag.log(`approveProactiveSend tool=${toolName} room=${roomId} owner absent & not delivery-authorized; deny`)
-        return false
+        // 抛带明确指引的错误，让 agent 知道下一步是 matrix_report_owner 私发主人，而非「让房间 Owner 批准」。
+        throw new Error('交付前须先 matrix_report_owner 把结果私发主人，等主人回复「交付」确认后，再调用 matrix_send_room_message 发群。')
       }
       // 已获授权（或主人在场）：放行，不再走 proactiveSend 审批。
       this.diag.log(`approveProactiveSend tool=${toolName} room=${roomId} delivery-authorized (or owner present); allow`)
