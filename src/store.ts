@@ -287,7 +287,9 @@ export class BridgeState {
   private scheduleSave(): void {
     clearTimeout(this.saveTimer)
     this.saveTimer = setTimeout(() => {
-      void this.saveNow()
+      // 写文件失败（如 Windows EPERM 文件锁竞争）绝不能让 unhandled rejection
+      // 导致整个 dsh 进程 fatal：静默降级，下一次 scheduleSave 会重试。
+      void this.saveNow().catch(() => {})
     }, SAVE_DEBOUNCE_MS)
   }
 
@@ -310,7 +312,7 @@ export class BridgeState {
 
   async dispose(): Promise<void> {
     clearTimeout(this.saveTimer)
-    await this.saving
-    await this.saveNow()
+    if (this.saving !== undefined) await this.saving.catch(() => {})
+    await this.saveNow().catch(() => {})
   }
 }
