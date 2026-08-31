@@ -229,6 +229,13 @@ export class MatrixChannel implements Channel {
   private readonly membersCache = new Map<string, { value: MatrixMember[]; at: number }>()
   private readonly userInfoCache = new Map<string, { value: MatrixUserInfo; at: number }>()
   private readonly seenRoomEvents = new Set<string>()
+  /**
+   * 自己发起的私聊房映射：userId → roomId。
+   * sendDm 优先复用这里记录的房，避免「邀请已发出但对方尚未 accept」的窗口内
+   * findDirectRoomWith 因对方不在 joined_members 而找不到、从而反复 create-room
+   * 导致 DM 房泛滥。进程内缓存（重启后靠 findDirectRoomWith 兜底重建）。
+   */
+  private readonly dmRoomsByUser = new Map<string, string>()
   private stopped = false
   private loop: Promise<void> | undefined
   private lifecycleAbort: AbortController | undefined
@@ -843,12 +850,21 @@ export class MatrixChannel implements Channel {
    * 返回目标 roomId（create 后可能因并发延迟，invite 已发出即可发送）。
    */
   async sendDm(userId: string, plain: string, html?: string): Promise<{ roomId: string; eventId?: string }> {
+    // 优先复用进程内记录的自己发起的私聊房（即使对方尚未 accept invite）。
+    const remembered = this.dmRoomsByUser.get(userId)
+    if (remembered !== undefined) {
+      await this.sendText(remembered, plain, html)
+      return { roomId: remembered }
+    }
     const existing = await this.findDirectRoomWith(userId)
     if (existing !== undefined) {
+      this.dmRoomsByUser.set(userId, existing)
       await this.sendText(existing, plain, html)
       return { roomId: existing }
     }
     const roomId = await this.createDirectRoom(userId)
+    // 创建后立即记录，避免 invite 未接受窗口内重复 create-room。
+    this.dmRoomsByUser.set(userId, roomId)
     await this.sendText(roomId, plain, html)
     return { roomId }
   }

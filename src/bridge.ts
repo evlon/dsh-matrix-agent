@@ -1626,6 +1626,19 @@ export class AccountBridge {
    * 同一房间串行：runningTask 占用时排队等待 turn/end 释放。
    */
   private async executeTask(roomId: string, task: MatrixTask): Promise<void> {
+    try {
+      await this.executeTaskInner(roomId, task)
+    } catch (error) {
+      // executeTask 多处被 void 调用（/approve、秘书工作台 approve），任何未预期错误
+      // 都不能变成 unhandled rejection 导致 dsh fatal。
+      this.ctx.logger.error('[dsh-matrix-agent] executeTask failed for room %s task %s: %s', roomId, task.id, messageOf(error))
+      task.status = 'approved'
+      task.note = `执行失败：${messageOf(error).slice(0, 60)}`
+      this.persistTasks(roomId)
+    }
+  }
+
+  private async executeTaskInner(roomId: string, task: MatrixTask): Promise<void> {
     // 新房间（未绑定 cwd）先引导选目录。
     // 主人不在场时：分身无法在房间内等主人选目录，直接用第一候选目录开工
     // （选目录这件事并入后续「开工请示」私聊主人时再确认）。
@@ -1665,10 +1678,18 @@ export class AccountBridge {
     // 开工前请示：秘书私下问老板要求/优先级/范围；老板回复后注入执行，超时按原任务开始。
     if (this.config.taskClarifyBeforeStart && this.owner !== undefined && task.status !== 'clarifying') {
       const role = this.roleForTask(roomId, task)
-      const dm = await this.channel.sendDm?.(
-        this.owner,
-        `【任务请示】收到任务：\n${task.text}\n角色：${role}\n\n如果你有要求/优先级/范围补充，请回复；否则我将按任务原样开工。`,
-      )
+      // sendDm 可能因 homeserver 限流/502 失败：绝不让单条请示 DM 的失败导致整个
+      // bridge 崩溃。失败时降级为「直接按原任务开工」（不阻塞任务执行）。
+      let dm: { roomId: string; eventId?: string } | undefined
+      try {
+        dm = await this.channel.sendDm?.(
+          this.owner,
+          `【任务请示】收到任务：\n${task.text}\n角色：${role}\n\n如果你有要求/优先级/范围补充，请回复；否则我将按任务原样开工。`,
+        )
+      } catch (error) {
+        this.ctx.logger.warn('[dsh-matrix-agent] clarification DM to owner failed (%s); proceeding without clarification', messageOf(error))
+        dm = undefined
+      }
       if (dm !== undefined) {
         // 秘书动作：记录时间线（仅元数据，actor=secretary）。
         this.recordTimeline(dm.roomId, 'approval', { target: this.owner }, 0, 'secretary')
@@ -1753,6 +1774,16 @@ export class AccountBridge {
 
   /** turn/end 后处理当前 running 任务：默认标记 done；若开启交付前确认则进入 confirming 私下请示老板。 */
   private async consumeNextTask(roomId: string): Promise<void> {
+    try {
+      await this.consumeNextTaskInner(roomId)
+    } catch (error) {
+      // consumeNextTask 多处被 void 调用（turn/end 处理、超时兜底），任何未预期错误
+      // 都不能变成 unhandled rejection 导致 dsh fatal。记录后止损即可。
+      this.ctx.logger.error('[dsh-matrix-agent] consumeNextTask failed for room %s: %s', roomId, messageOf(error))
+    }
+  }
+
+  private async consumeNextTaskInner(roomId: string): Promise<void> {
     const runningId = this.runningTask.get(roomId)
     if (runningId !== undefined) {
       const t = this.findTask(roomId, runningId)
@@ -1784,10 +1815,17 @@ export class AccountBridge {
   /** 交付前确认：秘书私下 DM 老板结果摘要，老板确认后交付回原房间，给意见则修订。 */
   private async confirmBeforeDeliver(roomId: string, task: MatrixTask): Promise<void> {
     const deliverTo = task.deliverTo ?? roomId
-    const dm = await this.channel.sendDm?.(
-      this.owner!,
-      `【交付确认】任务完成：\n${task.text}\n\n完成情况：${task.result ?? '（已完成，结果见原房间）'}\n\n回复「交付」确认对外交付，或直接回复修改意见。`,
-    )
+    // sendDm 可能因 homeserver 限流/502 失败：降级为「直接交付」，绝不让单条 DM 失败崩溃 bridge。
+    let dm: { roomId: string; eventId?: string } | undefined
+    try {
+      dm = await this.channel.sendDm?.(
+        this.owner!,
+        `【交付确认】任务完成：\n${task.text}\n\n完成情况：${task.result ?? '（已完成，结果见原房间）'}\n\n回复「交付」确认对外交付，或直接回复修改意见。`,
+      )
+    } catch (error) {
+      this.ctx.logger.warn('[dsh-matrix-agent] delivery-confirm DM to owner failed (%s); delivering directly', messageOf(error))
+      dm = undefined
+    }
     if (dm === undefined) {
       // 私聊失败：直接交付（降级）。
       task.status = 'done'

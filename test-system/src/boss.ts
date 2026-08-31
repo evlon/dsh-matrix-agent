@@ -37,6 +37,8 @@ export class BossAgent {
   /** 所有收到的数字人 DM（供断言）。 */
   readonly dmEvents: BossDmEvent[] = []
   private readonly dmByRoom = new Map<string, { lastText: string; replied: boolean }>()
+  /** 老板代理启动时间：只处理此时间之后的新请示，避免重放历史 DM 房里的旧请示。 */
+  private readonly startedAt = Date.now()
 
   constructor(options: BossAgentOptions) {
     this.bossUserId = options.bossUserId
@@ -99,6 +101,9 @@ export class BossAgent {
   private async handleRoom(roomId: string, msgs: RoomMessage[]): Promise<void> {
     // 只看数字人发来的消息（排除自己/其他同事）。
     for (const msg of msgs) {
+      // 忽略老板代理启动之前的历史消息：否则会重放历史 DM 房里的旧请示，
+      // 对已经不存在的任务重复批准。
+      if (msg.timestamp < this.startedAt) continue
       // 找数字人的消息：数字人 id 未知时按内容特征（【任务请示】【交付确认】）。
       const text = msg.body
       if (!text.includes('【任务请示】') && !text.includes('【交付确认】')) continue
