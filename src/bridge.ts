@@ -1838,10 +1838,12 @@ export class AccountBridge {
 
   /** 实际开工：标记 approved/running 并把任务（含角色/老板指示）注入干活会话。 */
   private async startTaskExecution(roomId: string, task: MatrixTask): Promise<void> {
+    this.ctx.logger.info('[dsh-matrix-agent] startTaskExecution room=%s task=%s', roomId, task.id)
     task.status = 'approved'
     this.runningTask.set(roomId, task.id)
     this.persistTasks(roomId)
     const ctxPrompt = await this.buildTaskPrompt(roomId, task)
+    this.ctx.logger.info('[dsh-matrix-agent] startTaskExecution prompt head=%s', ctxPrompt.slice(0, 120).replace(/\n/g, ' '))
     await this.deliver(roomId, ctxPrompt, task.sender)
     await this.pushTasks(roomId)
   }
@@ -2059,6 +2061,7 @@ export class AccountBridge {
       // 多轮确认：老板回「批准/开工/ok」→ 开工；否则记录指示，继续留在 clarifying（可继续补充）。
       const startWords = /^(批准|开工|开始|ok|可以|yes|go)$/i
       if (startWords.test(trimmed)) {
+        this.ctx.logger.info('[dsh-matrix-agent] owner approved room=%s task=%s, starting execution', workRoomId, task.id)
         await this.safeSend(dmRoomId, `✅ 已批准，开始执行任务。`, undefined)
         await this.startTaskExecution(workRoomId, task)
         return
