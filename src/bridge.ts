@@ -2434,6 +2434,13 @@ export class AccountBridge {
       this.diag.log(`approveProactiveSend tool=${toolName} no room to push approval; deny`)
       return false
     }
+    // 秘书编排豁免：该房间有 running 任务（老板已批准执行）时，agent 执行过程中
+    // 用 matrix_send_room_message 交付结果属于「已批准任务的一部分」，不再单独审批。
+    // 否则主动发送审批会因 turn 结束 signal abort 被取消，导致任务永远无法交付。
+    if (toolName === 'matrix_send_room_message' && this.runningTask.has(roomId)) {
+      this.diag.log(`approveProactiveSend tool=${toolName} room=${roomId} running task; allow (part of approved task)`)
+      return true
+    }
     if (!this.isRedline(toolName) && this.authStore.isStandingAuthorized(this.userId, roomId, toolName, this.config.redlineTools ?? [])) {
       this.diag.log(`approveProactiveSend tool=${toolName} room=${roomId} standing auth; allow`)
       return true
