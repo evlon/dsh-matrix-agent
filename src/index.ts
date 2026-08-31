@@ -108,6 +108,9 @@ export function apply(ctx: Context, config: MatrixConfig): void {
   } catch { /* 忽略 */ }
 
   function startBridge(cfg: MatrixConfig, tok: string): void {
+    // 幂等守卫：初次 applyUser 的 onConfigChange 与 apply 末尾的 initToken 检查
+    // 都可能触发本函数，避免重复创建 bridge（两个实例会互相干扰 sync）。
+    if (bridgeRef !== undefined) return
     const twins: DigitalTwinAccount[] = cfg.digitalTwinMode ? (cfg.digitalTwins ?? []) : []
     const bridge = new MatrixBridge(ctx, {
       ...cfg,

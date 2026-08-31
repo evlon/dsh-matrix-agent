@@ -675,10 +675,12 @@ export class AccountBridge {
   }
 
   /**
-   * 检测会话历史里是否有「孤立 tool-result」：某条 user 消息带 tool-result 内容块，
-   * 但往前最近的 assistant 消息没有 tool_calls（或没有声明足够的 tool_call）。
-   * 这种历史会让 LLM API 拒绝请求（Messages with role 'tool' must be a response to
-   * a preceding message with 'tool_calls'）。
+   * 检测会话历史里的工具序列损坏，两种形态都会让 LLM API 拒绝请求
+   * （CodeBuddy 返回 11148 "tool calls and tool results do not match"）：
+   *   1. 「孤立 tool-result」：某条 user 消息带 tool-result 内容块，但往前最近的
+   *      assistant 消息没有 tool_calls（或没有声明足够的 tool_call）。
+   *   2. 「悬挂 tool-call」：历史末尾仍有未配对的 tool_calls（assistant 声明了
+   *      调用但从未收到结果——常见于步骤被中断/失败后工具结果未落地）。
    */
   private sessionHasOrphanToolResult(agent: Agent): boolean {
     try {
@@ -697,7 +699,8 @@ export class AccountBridge {
         if (toolResults > openCalls) return true
         openCalls = Math.max(0, openCalls - toolResults)
       }
-      return false
+      // 历史末尾仍有未配对 tool_calls：后端会以 11148 拒绝请求。
+      return openCalls > 0
     } catch (error) {
       this.ctx.logger.warn('[dsh-matrix-agent] orphan tool-result check failed: %s', messageOf(error))
       return false

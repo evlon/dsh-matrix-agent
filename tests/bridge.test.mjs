@@ -574,6 +574,78 @@ test('bridge: orphan tool-result history triggers session rebuild with new epoch
   }
 })
 
+// 自愈：resume 到含「悬挂 tool-call」历史（assistant 声明了 tool_calls 但
+// 从未配对到 tool-result —— 例如步骤被中断后工具结果未落地）的会话时，
+// createRoomAgent 同样应丢弃它并重建，否则后端会以 11148
+// ("tool calls and tool results do not match") 拒绝请求。
+test('bridge: dangling tool-call history triggers session rebuild with new epoch', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-matrix-dangling-rebuild-test-'))
+  let bridge
+  try {
+    const hs = fakeHomeserver()
+    const { ctx, captured } = makeCtx()
+    const brokenId = 'matrix-ai-niukunliang-deadbeef2'
+    const brokenSession = {
+      id: brokenId,
+      append() {},
+      deriveMessages() {
+        return [
+          {
+            role: 'assistant',
+            content: [{ type: 'text', text: '' }],
+            tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '{}' } }],
+          },
+          // 没有对应的 tool-result —— 历史末尾悬挂着一个未配对调用
+        ]
+      },
+    }
+    const brokenAgent = { id: brokenId, status: 'idle', session: brokenSession, followup() {} }
+    const originalCreate = ctx.agents.create.bind(ctx.agents)
+    ctx.agents.resume = async ({ resumeSessionId }) => {
+      if (String(resumeSessionId) === brokenId) {
+        const handle = { agent: brokenAgent, async dispose() {} }
+        captured.agents.push(handle)
+        return handle
+      }
+      throw new Error('has no persisted log')
+    }
+    ctx.agents.get = () => undefined
+
+    bridge = new MatrixBridge(ctx, {
+      homeserverUrl: 'https://hs.example',
+      accessToken: 'token',
+      userId: USER_ID,
+      allowedUserIds: [SENDER],
+      allowAllUsers: false,
+      provider: 'deepseek-official',
+      model: 'deepseek-v4-flash',
+      chunkMaxChars: 4000,
+      mergeTimeoutSecs: 5,
+      approvalTimeoutSecs: 60,
+      stateDir: dir,
+      fetchFn: hs.fetch,
+      sleep: async () => {},
+      matrixTools: true,
+    })
+
+    const account = bridge['accounts'][0]
+    account['state'].setRoomSession('!room:hs.example', brokenId)
+
+    const startPromise = bridge.start()
+    hs.deliver([])
+    await startPromise
+
+    hs.deliver([textEvent('$t1', '@bot 你好!!')])
+    await waitFor(() => captured.agents.some(h => h.agent.id.includes('-e1')))
+    const rebuilt = captured.agents.find(h => h.agent.id.includes('-e1'))
+    assert.ok(rebuilt, '悬挂 tool-call 历史应触发带新 epoch 的会话重建')
+    assert.equal(account['state'].roomSession('!room:hs.example'), rebuilt.agent.id)
+  } finally {
+    if (bridge) await bridge.stop()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 // 房间事件注入：notifyRoomEvents=true 且成员已授权时，join 事件应注入已绑定 agent；
 // notifyRoomEvents=false 时忽略（不注入）。
 test('bridge: room event injection gated by notifyRoomEvents', async () => {
