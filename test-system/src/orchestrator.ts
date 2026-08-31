@@ -156,6 +156,7 @@ export class Orchestrator {
         bossUserId: this.config.bossUserId,
         bossAccessToken: this.config.bossAccessToken,
         fetchFn: this.fetchFn,
+        bus: this.bus,
       })
       this.boss.start()
       console.log(`[test] 老板代理已启动: ${this.config.bossUserId}（自动批准/确认请示）`)
@@ -179,6 +180,25 @@ export class Orchestrator {
       this.stopFlags.add(roomId)
       room.stop()
     }
+  }
+
+  /** 切换「主人」驱动模式：true=AI 自动批准，false=真人在 UI 答复。 */
+  setOwnerAutoApprove(v: boolean): void {
+    this.boss?.setAutoApprove(v)
+  }
+
+  get ownerAutoApprove(): boolean {
+    return this.boss !== undefined && (this.boss as unknown as { autoApprove?: boolean }).autoApprove !== false
+  }
+
+  /** 主人区域收件箱（数字人发来的请示/汇报，供 UI 展示）。 */
+  get ownerInbox(): Array<{ roomId: string; text: string; kind: string }> {
+    return this.boss?.inbox ?? []
+  }
+
+  /** 真人对某条请示答复（发送到对应 DM 房）。 */
+  async ownerReply(roomId: string, replyText: string): Promise<void> {
+    await this.boss?.replyTo(roomId, replyText)
   }
 
   /** 干预入口（Web UI 调用）。全局指令（'all'/无 roomId）分发到所有房间。 */

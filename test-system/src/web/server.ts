@@ -25,6 +25,12 @@ export interface WebServerOptions {
   getActiveScenario?: () => { id: string; name: string; run: number } | undefined
   /** 场景控制（start/stop/restart/room-restart）。 */
   scenario?: (req: ScenarioRequest) => { ok: boolean; message?: string }
+  /** 主人区域：切换 AI/真人驱动。 */
+  setOwnerAutoApprove?: (v: boolean) => void
+  /** 主人区域：读取收件箱。 */
+  getOwnerInbox?: () => Array<{ roomId: string; text: string; kind: string }>
+  /** 主人区域：真人对某条请示答复。 */
+  ownerReply?: (roomId: string, replyText: string) => Promise<void>
 }
 
 /** 场景控制请求。 */
@@ -100,6 +106,7 @@ export class TestWebServer {
             events: bus.recent(300),
             twinInjectionAvailable: this.options.twinInjectionAvailable ?? false,
             activeScenario: this.options.getActiveScenario?.() ?? undefined,
+            ownerInbox: this.options.getOwnerInbox?.() ?? [],
           }))
           return
         }
@@ -143,6 +150,45 @@ export class TestWebServer {
             } catch {
               res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' })
               res.end(JSON.stringify({ ok: false, message: '无效的指令 JSON' }))
+            }
+          })
+          return
+        }
+        if (path === '/owner' && req.method === 'POST') {
+          // 主人区域控制：{ action: 'auto'|'manual' } 切换驱动；{ action: 'reply', roomId, text } 答复。
+          let body = ''
+          req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
+          req.on('end', () => {
+            try {
+              const req2 = JSON.parse(body) as { action: string; roomId?: string; text?: string }
+              if (req2.action === 'auto') {
+                this.options.setOwnerAutoApprove?.(true)
+                res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+                res.end(JSON.stringify({ ok: true, mode: 'auto' }))
+                return
+              }
+              if (req2.action === 'manual') {
+                this.options.setOwnerAutoApprove?.(false)
+                res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+                res.end(JSON.stringify({ ok: true, mode: 'manual' }))
+                return
+              }
+              if (req2.action === 'reply') {
+                if (req2.roomId === undefined || req2.text === undefined) {
+                  res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' })
+                  res.end(JSON.stringify({ ok: false, message: '缺少 roomId/text' }))
+                  return
+                }
+                void this.options.ownerReply?.(req2.roomId, req2.text)
+                res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+                res.end(JSON.stringify({ ok: true }))
+                return
+              }
+              res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' })
+              res.end(JSON.stringify({ ok: false, message: `未知 action: ${req2.action}` }))
+            } catch {
+              res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' })
+              res.end(JSON.stringify({ ok: false, message: '无效 JSON' }))
             }
           })
           return

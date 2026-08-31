@@ -70,6 +70,9 @@ async function main(): Promise<void> {
     twinInjectionAvailable: orchestrator.twinInjectionAvailable,
     getActiveScenario: () => orchestrator.activeScenario,
     scenario: handleScenario,
+    setOwnerAutoApprove: (v) => orchestrator.setOwnerAutoApprove(v),
+    getOwnerInbox: () => orchestrator.ownerInbox,
+    ownerReply: (roomId, text) => orchestrator.ownerReply(roomId, text),
   })
   await web.start()
 

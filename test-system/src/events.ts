@@ -3,7 +3,7 @@
  * 供 Web UI（SSE）实时推送 + 内存日志。
  */
 
-export type EventKind = 'colleague' | 'twin' | 'system' | 'assert' | 'assert-result'
+export type EventKind = 'colleague' | 'twin' | 'system' | 'assert' | 'assert-result' | 'owner-inbox'
 
 export interface TestEvent {
   roomId: string
@@ -18,6 +18,18 @@ export interface TestEvent {
   status?: string
   /** 轮次。 */
   round?: number
+  /**
+   * owner-inbox 专用：主人收到的请示/汇报结构化内容。
+   * { kind: 'clarify'|'confirm'|'report', group, requester, question, suggestedCwd }
+   */
+  ownerItem?: {
+    kind: 'clarify' | 'confirm' | 'report'
+    group?: string
+    requester?: string
+    question: string
+    suggestedCwd?: string
+    reply?: string
+  }
 }
 
 /** 房间级状态（供 UI 列表展示）。 */

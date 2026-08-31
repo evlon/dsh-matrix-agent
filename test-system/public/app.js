@@ -186,6 +186,10 @@
       setCtlMsg('ℹ ' + (event.text || ''), true)
       return
     }
+    if (event.kind === 'owner-inbox') {
+      handleOwnerEvent(event)
+      return
+    }
     // 忽略占位房间事件（创建前的 room-xxx 占位 id；真实房间由 /state 提供）。
     if (String(event.roomId).startsWith('room-')) return
     const room = ensureRoom(event)
@@ -210,6 +214,66 @@
     return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
   }
 
+  // ---- 主人区域 ----
+  const ownerInboxEl = document.getElementById('owner-inbox')
+  const ownerModeEl = document.getElementById('owner-mode-select')
+  const ownerItems = [] // { roomId, text, kind, reply? }
+
+  function renderOwnerInbox() {
+    if (ownerItems.length === 0) {
+      ownerInboxEl.innerHTML = '<p class="muted">暂无请示…</p>'
+      return
+    }
+    ownerInboxEl.innerHTML = ''
+    for (const item of ownerItems) {
+      const card = document.createElement('div')
+      card.className = 'owner-item'
+      const t = new Date(item.ts).toLocaleTimeString('zh-CN', { hour12: false })
+      const kindLabel = item.kind === 'clarify' ? '🤔 请示' : item.kind === 'confirm' ? '🔐 待确认' : '📊 汇报'
+      const body = `<div class="owner-item-head">${kindLabel}<span class="time">${t}</span></div><pre class="owner-item-text">${esc(item.text)}</pre>`
+      card.innerHTML = body
+      if (ownerModeEl.value === 'manual') {
+        const replyBar = document.createElement('div')
+        replyBar.className = 'owner-reply-bar'
+        const input = document.createElement('input')
+        input.className = 'ctl-input'
+        input.placeholder = item.kind === 'clarify' ? '批准 / 指定目录 / 补充要求' : '交付 / 修改意见'
+        const btn = document.createElement('button')
+        btn.className = 'ctl-btn primary'
+        btn.textContent = '答复'
+        btn.addEventListener('click', () => {
+          const text = input.value.trim()
+          if (!text) return
+          fetch('/owner', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'reply', roomId: item.roomId, text }),
+          }).then((res) => res.json()).then((r) => {
+            if (r.ok) { item.reply = text; input.disabled = true; btn.disabled = true }
+          }).catch(() => {})
+        })
+        replyBar.appendChild(input)
+        replyBar.appendChild(btn)
+        card.appendChild(replyBar)
+      }
+      ownerInboxEl.appendChild(card)
+    }
+  }
+
+  function handleOwnerEvent(event) {
+    ownerItems.push({ roomId: event.roomId, text: event.text || '', kind: event.ownerItem?.kind || 'clarify', ts: event.ts, reply: event.ownerItem?.reply })
+    if (ownerItems.length > 50) ownerItems.shift()
+    renderOwnerInbox()
+  }
+
+  ownerModeEl.addEventListener('change', () => {
+    fetch('/owner', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: ownerModeEl.value === 'auto' ? 'auto' : 'manual' }),
+    }).catch(() => {})
+    renderOwnerInbox()
+  })
+
+
   // 初始拉取状态。
   fetch('/state').then((res) => res.json()).then((data) => {
     twinInjectionAvailable = !!data.twinInjectionAvailable
@@ -223,6 +287,10 @@
       ensureRoom(event)
     }
     if (data.rooms && data.rooms.length > 0) selectedRoomId = data.rooms[0].roomId
+    for (const item of data.ownerInbox || []) {
+      ownerItems.push({ roomId: item.roomId, text: item.text, kind: item.kind, ts: Date.now() })
+    }
+    renderOwnerInbox()
     renderRoomList()
     renderChat()
     renderControlBar()

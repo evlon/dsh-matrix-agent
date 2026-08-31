@@ -57,6 +57,19 @@
         <div id="ctl-msg" class="ctl-msg"></div>
       </div>
     </section>
+    <aside class="owner-panel">
+      <div class="owner-header">
+        <h2>👤 主人区域</h2>
+        <div class="owner-mode">
+          <label title="AI 自动批准请示">驱动：</label>
+          <select id="owner-mode-select" class="ctl-select">
+            <option value="auto" selected>🤖 AI 自动</option>
+            <option value="manual">🧑 真人答复</option>
+          </select>
+        </div>
+      </div>
+      <div id="owner-inbox" class="owner-inbox"><p class="muted">暂无请示…</p></div>
+    </aside>
   </main>
   <script src="/app.js"></script>
 </body>

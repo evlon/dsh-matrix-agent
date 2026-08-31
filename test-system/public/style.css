@@ -165,3 +165,32 @@ body {
 .assert-row { font-size: 11px; line-height: 1.5; }
 .assert-row.ok { color: var(--ok); }
 .assert-row.fail { color: var(--error); }
+
+/* ---- 主人区域 ---- */
+.owner-panel {
+  width: 320px;
+  min-width: 240px;
+  max-width: 45vw;
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+  padding: 12px;
+  overflow-y: auto;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.owner-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.owner-header h2 { font-size: 13px; color: var(--muted); }
+.owner-mode { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.owner-inbox { display: flex; flex-direction: column; gap: 8px; }
+.owner-item {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+}
+.owner-item-head { font-size: 12px; font-weight: 600; display: flex; justify-content: space-between; }
+.owner-item-text { font-size: 12px; white-space: pre-wrap; margin: 6px 0 0; color: var(--text); }
+.owner-reply-bar { display: flex; gap: 6px; margin-top: 8px; }
+.owner-reply-bar .ctl-input { flex: 1; min-width: 0; }

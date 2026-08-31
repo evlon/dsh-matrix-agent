@@ -6,6 +6,7 @@
  * - 记录所有收到的 DM（供断言：数字人是否真的私聊了老板）
  */
 import { MatrixClient, type RoomMessage } from './matrix-client.js'
+import type { EventBus } from './events.js'
 
 export interface BossDmEvent {
   roomId: string
@@ -26,12 +27,21 @@ export interface BossAgentOptions {
   pollMs?: number
   /** 测试接缝。 */
   fetchFn?: typeof fetch
+  /** 事件总线：主人收件箱（owner-inbox）推送到 Web UI。 */
+  bus?: EventBus
+  /**
+   * 是否自动批准（AI 驱动）。默认 true。
+   * false = 真人驱动：请示停在主人区域，由真人在 UI 点「批准/指定目录」，经 control 回写。
+   */
+  autoApprove?: boolean
 }
 
 export class BossAgent {
   private readonly client: MatrixClient
   private readonly bossUserId: string
   private readonly pollMs: number
+  private readonly bus: EventBus | undefined
+  private autoApprove: boolean
   private timer: ReturnType<typeof setTimeout> | undefined
   private readonly seenEvents = new Set<string>()
   /** 所有收到的数字人 DM（供断言）。 */
@@ -39,15 +49,24 @@ export class BossAgent {
   private readonly dmByRoom = new Map<string, { lastText: string; replied: boolean }>()
   /** 老板代理启动时间：只处理此时间之后的新请示，避免重放历史 DM 房里的旧请示。 */
   private readonly startedAt = Date.now()
+  /** 待真人答复的请示（owner-inbox，UI 展示 + 真人驱动时回写用）。 */
+  readonly inbox: Array<{ roomId: string; text: string; kind: 'clarify' | 'confirm' }> = []
 
   constructor(options: BossAgentOptions) {
     this.bossUserId = options.bossUserId
     this.pollMs = options.pollMs ?? 2000
+    this.bus = options.bus
+    this.autoApprove = options.autoApprove ?? true
     this.client = new MatrixClient({
       homeserver: options.homeserver,
       account: { userId: options.bossUserId, displayName: localpart(options.bossUserId), accessToken: options.bossAccessToken },
       fetchFn: options.fetchFn,
     })
+  }
+
+  /** 切换 AI/真人驱动。 */
+  setAutoApprove(v: boolean): void {
+    this.autoApprove = v
   }
 
   /** 启动轮询：监听所有已加入房间，找数字人发来的请示/确认并自动回复。 */
@@ -114,7 +133,21 @@ export class BossAgent {
       const isClarify = text.includes('【任务请示】')
       const kind = isClarify ? 'clarify' as const : 'confirm' as const
       const reply = isClarify ? '批准' : '交付'
-      // 自动回复（老板行为）。
+
+      // 推送到主人区域（owner-inbox），无论 AI/真人驱动都展示。
+      this.bus?.emit({
+        roomId, roomName: '主人收件箱', ts: Date.now(), kind: 'owner-inbox', from: this.bossUserId,
+        text,
+        ownerItem: { kind, question: text, reply: this.autoApprove ? reply : undefined },
+      })
+
+      if (!this.autoApprove) {
+        // 真人驱动：停在主人区域，等真人点「批准/指定目录」后经 control 回写。
+        this.inbox.push({ roomId, text, kind })
+        console.log(`[boss] 收到数字人${kind === 'clarify' ? '请示' : '确认'}，等待真人答复（真人驱动模式）`)
+        continue
+      }
+      // AI 驱动：自动回复。
       try {
         await this.client.sendText(roomId, reply)
         this.dmEvents.push({ roomId, ts: Date.now(), text, reply, kind })
@@ -122,6 +155,16 @@ export class BossAgent {
       } catch (error) {
         console.error(`[boss] 回复失败: ${error instanceof Error ? error.message : String(error)}`)
       }
+    }
+  }
+
+  /** 真人驱动：主人对某条请示给出答复（批准/交付/指定目录），发给数字人。 */
+  async replyTo(roomId: string, replyText: string): Promise<void> {
+    try {
+      await this.client.sendText(roomId, replyText)
+      console.log(`[boss] 主人答复：${replyText}`)
+    } catch (error) {
+      console.error(`[boss] 主人答复失败: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 }
