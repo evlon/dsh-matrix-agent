@@ -8,3 +8,6 @@ lib/
 package-lock.json
 
 *.tgz
+
+# 本地环境配置含真实 token，不入库
+test-system/.env
