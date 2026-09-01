@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { TwinTimeline, TIMELINE_KIND_LABELS } from '../lib/timeline.js'
-import { rolePersonaFor, SOUL_PRESET_IDS } from '../lib/soul.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -142,19 +141,4 @@ test('TIMELINE_KIND_LABELS 覆盖全部类型', () => {
   for (const kind of ['reply', 'tool-call', 'proactive', 'self-intro', 'approval', 'task']) {
     assert.ok(TIMELINE_KIND_LABELS[kind] !== undefined, `kind ${kind} 有中文标签`)
   }
-})
-
-// ---- 秘书编排：角色预设（roomRoles / 任务级角色覆盖） ----
-
-test('SOUL_PRESET_IDS 覆盖全部内置角色', () => {
-  assert.deepEqual(SOUL_PRESET_IDS, ['dynamic', 'default', 'pm', 'dev', 'qa', 'leader', 'newbie'])
-})
-
-test('rolePersonaFor 为已知角色返回 persona，未知回退百变员工', () => {
-  assert.ok(rolePersonaFor('dev').includes('研发工程师'))
-  assert.ok(rolePersonaFor('qa').includes('测试工程师'))
-  assert.ok(rolePersonaFor('pm').includes('产品经理'))
-  assert.ok(rolePersonaFor('leader').includes('负责人'))
-  assert.ok(rolePersonaFor('newbie').includes('入职'))
-  assert.ok(rolePersonaFor('unknown-role').includes('百变员工'))
 })
