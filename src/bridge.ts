@@ -31,8 +31,6 @@ import { BridgeState } from './store.js'
 import type { AllowDenyRule } from './store.js'
 import { AuthStore } from './auth-store.js'
 import { MemberStore } from './member-store.js'
-import { soulText, rolePersonaFor, SOUL_PRESET_IDS } from './soul.js'
-import type { SoulHandle } from './soul.js'
 import type { TasksSnapshot, TimelineOps, SecretaryOps } from './settings.js'
 import { TwinTimeline } from './timeline.js'
 import type { TimelineKind } from './timeline.js'
@@ -47,23 +45,6 @@ const DENY_RE = /^(拒绝|驳回|deny|no|reject)$/i
 const TIMELINE_MEMORY_SECTION_TEXT =
   '你有跨群的自我记忆。需要回忆自己做过的事时，用 twin_timeline 工具查询你的行动摘要；' +
   '想深入了解某个房间的细节时，用 matrix_get_recent_messages 查询该房间。'
-
-/**
- * 秘书工作流提示词段（彻底分层的默认工作流）。
- * bridge 不代执行动作，只把「该怎么工作」注入 agent 的 system prompt，
- * 由 agent 用原子工具自行组合。可被 skill（可定制）覆盖，但这里保证最小可用。
- * 仅数字分身（有 owner）注入；真人主助手（无 owner）不注入（直接对话即可）。
- */
-const SECRETARY_WORKFLOW_SECTION_TEXT = [
-  '【工作方式】你是数字分身，主人是 owner。收到同事任务时按以下流程，绝不在群里泄露「请示/待审/等老板」或你的内心独白。',
-  '1. 群里回一句自然的人话（如「收到，我这就去整理 X，稍后发你」），不要只报进度。',
-  '2. 私下请示主人：调 matrix_request_owner_decision，说清「哪个群、谁派的、什么活、建议目录」。',
-  '3. 等主人回复「批准/开工/可以」再动手；主人指定目录就按那个目录；没回就继续等，绝不擅自开工。',
-  '4. 用 matrix_set_room_cwd 定目录，matrix_list_workspace_files 列文件，matrix_read_workspace_file 读真实数据，整理出结果。',
-  '5. 先 matrix_report_owner 把完整结果私发主人，等主人回「交付/批准」。',
-  '6. 主人确认后，才用 matrix_send_room_message 把完整结果发到群里交付。',
-  '硬性禁令：主人未确认前绝不发群；不凭记忆编造数据，必须读工作目录真实文件。',
-].join('\n')
 
 /** 媒体 msgtype → 中文标签（入站媒体归一）。 */
 const MEDIA_LABELS: Record<string, string> = {
@@ -304,8 +285,6 @@ export class AccountBridge {
   private readonly allAccountIds: readonly string[]
   /** 会话命名空间（实例身份）：参与确定性会话 id，隔离不同 dsh 实例的同房间会话。 */
   private readonly sessionNamespace: string | undefined
-  /** 灵魂子系统句柄（index.ts 注册后传入），用于 agentSetup 注入灵魂 prompt。 */
-  private readonly soulHandle?: SoulHandle
   /** 成员记忆库（记住每个房间里见过的成员）。 */
   private readonly memberStore: MemberStore
   /** 自我时间线（跨房间，仅元数据；MatrixBridge 传入的共享实例）。 */
@@ -386,7 +365,6 @@ export class AccountBridge {
     allAccountIds: readonly string[],
     pendingRooms: Set<string>,
     channelFactory: (opts: ChannelOptions) => Channel,
-    soulHandle?: SoulHandle,
     timeline?: TwinTimeline,
     publishTasksSnapshot?: (snapshot: TasksSnapshot) => void,
     publishTimelineSnapshot?: (snapshot: { entries: unknown[]; updatedAt: number }) => void,
@@ -400,7 +378,6 @@ export class AccountBridge {
     this.authStore = authStore
     this.allAccountIds = allAccountIds
     this.pendingRooms = pendingRooms
-    this.soulHandle = soulHandle
     this.sessionNamespace = sessionNamespace
     this.timeline = timeline ?? new TwinTimeline(config.stateDir, config.timelineCap ?? 500)
     this.publishTasksSnapshot = publishTasksSnapshot
@@ -886,37 +863,14 @@ export class AccountBridge {
         throw new Error('agentPresets service is not available on the host context')
       }
       await presets.mount(agentCtx, preset)
-      // 灵魂注入：在 agent scope 上注册 system prompt section（仅对该 room agent 生效）。
-      // 用 agentCtx 的 systemPrompt（scope 化）注册，避免污染 GUI 会话。
-      // 防御：agentCtx.get 在测试 mock/特殊上下文中可能不存在，缺失时跳过注入。
+      // 岗位 persona 与秘书工作流现在由岗位 preset（agent.cordis.yml 的 persona 行）提供，
+      // 不再在此注入（人格完全由 skill/preset 承载）。
+      // 保留 systemPrompt 读取能力：时间线提示词段仍需注入。
       const getSystemPrompt = (): { section(section: { name: string; order: number; text: string | (() => string) }): () => void } | undefined => {
         if (typeof agentCtx?.get !== 'function') return undefined
         return agentCtx.get('systemPrompt') as
           | { section(section: { name: string; order: number; text: string | (() => string) }): () => void }
           | undefined
-      }
-      const soul = this.soulHandle
-      if (soul !== undefined && soul.getSoulConfig().enabled !== false) {
-        const systemPrompt = getSystemPrompt()
-        if (systemPrompt !== undefined) {
-          agentCtx.effect(() => systemPrompt.section({
-            name: 'twin:soul',
-            order: 5,
-            text: () => soulText(soul.getSoulConfig()),
-          }), 'matrix-agent.soul')
-        }
-      }
-      // 秘书工作流提示词段：数字分身（有 owner）注入默认工作流，指导 agent 用原子工具
-      // 走「请示→读数据→汇报→等交付→发群」。这是提示词指导，不是代执行；红线仍在 bridge。
-      if (this.owner !== undefined && this.owner !== '') {
-        const systemPrompt = getSystemPrompt()
-        if (systemPrompt !== undefined) {
-          agentCtx.effect(() => systemPrompt.section({
-            name: 'twin:secretary-workflow',
-            order: 10,
-            text: () => SECRETARY_WORKFLOW_SECTION_TEXT,
-          }), 'matrix-agent.secretary-workflow')
-        }
       }
       // 自我时间线常驻提示词段（第 0 级暴露）：恒定字符串，字节永不变化，
       // 不影响 KV 缓存命中率；只告知能力，摘要/详情按需工具查。
@@ -2128,8 +2082,6 @@ export class AccountBridge {
 
 export interface MatrixBridgeOptions extends Config {
   readonly accessToken: string
-  /** 灵魂子系统句柄（可选；由 index.ts 注册后传入）。 */
-  readonly soulHandle?: SoulHandle
   /** 任务快照写回调（可选）：任务变更时把各房间任务镜像写入 settings（供 Web 任务视图）。 */
   readonly updateTasksSnapshot?: (snapshot: TasksSnapshot) => void
   /** 时间线快照写回调（可选）：时间线变更时写入 settings（供 Web 时间线 tab）。 */
@@ -2203,7 +2155,6 @@ export class MatrixBridge {
         allAccountIds,
         pendingRooms,
         channelFactory,
-        config.soulHandle,
         timeline,
         config.updateTasksSnapshot,
         config.updateTimelineSnapshot,
@@ -2232,7 +2183,6 @@ export class MatrixBridge {
           allAccountIds,
           pendingRooms,
           channelFactory,
-          config.soulHandle,
           timeline,
           config.updateTasksSnapshot,
           config.updateTimelineSnapshot,

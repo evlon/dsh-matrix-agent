@@ -538,7 +538,7 @@ function MatrixSettingsPage(props) {
   const [scope] = React.useState(() => bindScope(ctx, MATRIX_NS))
   const [form, setForm] = React.useState(() => mergeFormSection(undefined))
   const [saved, setSaved] = React.useState(false)
-  const [active, setActive] = React.useState('soul')
+  const [active, setActive] = React.useState('account')
 
   React.useEffect(() => {
     const update = () => {
@@ -595,7 +595,6 @@ function MatrixSettingsPage(props) {
   }
 
   const tabs = [
-    { id: 'soul', label: '灵魂' },
     { id: 'account', label: 'Matrix 账号' },
     { id: 'social', label: '社交' },
     { id: 'timeline', label: '时间线' },
@@ -625,11 +624,9 @@ function MatrixSettingsPage(props) {
           },
         }, tab.label))),
     React.createElement('div', { role: 'tabpanel' },
-      active === 'soul' ? React.createElement(SoulTab, tabProps)
-        : active === 'account' ? React.createElement(AccountTab, tabProps)
+      active === 'account' ? React.createElement(AccountTab, tabProps)
         : active === 'social' ? React.createElement(SocialTab, tabProps)
-        : React.createElement(TimelineTab, { ctx })),
-    active === 'soul' ? React.createElement(BehaviorSummary, { conn }) : null)
+        : React.createElement(TimelineTab, { ctx })))
 }
 
 /** 任务状态中文标签与颜色。 */

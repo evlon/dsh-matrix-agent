@@ -20,13 +20,9 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { appendFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
 import { MatrixBridge } from './bridge.js'
 import type { Config as MatrixConfig, DigitalTwinAccount } from './config.js'
 import { resolveStateDir } from './config.js'
-import { registerSoul } from './soul.js'
 import { registerMatrixSettings } from './settings.js'
 import type { TimelineOps, SecretaryOps } from './settings.js'
 
@@ -36,7 +32,6 @@ export * from './config.js'
 export * from './format.js'
 export * from './matrix.js'
 export * from './member-store.js'
-export * from './soul.js'
 export * from './settings.js'
 export * from './store.js'
 export * from './timeline.js'
@@ -71,12 +66,6 @@ export function apply(ctx: Context, config: MatrixConfig): void {
   // onTimelineOps 经引用转发：bridge 创建后把管理命令分发到账号，再清零命令字段。
   let bridgeRef: MatrixBridge | undefined
   let bridgeDisposer: (() => void) | undefined
-  // soulHandle 用 let 提前声明：registerMatrixSettings 内部的首次 applyUser 会同步触发
-  // onConfigChange，若此时 startBridge 引用尚未赋值的 soulHandle 会抛 TDZ
-  // （"Cannot access 'soulHandle' before initialization"），导致 settings register 失败、
-  // snapshotScope 永不设置。改为「soulHandle 就绪后才允许 onConfigChange 启动 bridge」，
-  // apply 末尾的 initToken 检查在 soulHandle 就绪后兜底启动。
-  let soulHandle: ReturnType<typeof registerSoul> | undefined
   const settingsHandle = registerMatrixSettings(ctx, config, {
     onTimelineOps: (ops: TimelineOps) => {
       bridgeRef?.handleTimelineOps(ops)
@@ -88,7 +77,7 @@ export function apply(ctx: Context, config: MatrixConfig): void {
     onConfigChange: (merged: MatrixConfig) => {
       const tok = merged.accessToken === '' ? process.env.DSH_MATRIX_TOKEN : merged.accessToken
       const ready = tok !== undefined && tok !== '' && merged.homeserverUrl !== '' && merged.userId !== ''
-      if (ready && bridgeRef === undefined && soulHandle !== undefined) {
+      if (ready && bridgeRef === undefined) {
         ctx.logger.info('[dsh-matrix-agent] config complete, starting Matrix bridge')
         startBridge(merged, tok as string)
       } else if (!ready && bridgeRef !== undefined) {
@@ -98,24 +87,6 @@ export function apply(ctx: Context, config: MatrixConfig): void {
     },
   })
   const mergedConfig: MatrixConfig = settingsHandle.getMerged()
-  // 灵魂子系统（行为统计 + 工具；配置从 merged config 读取，live 更新）。
-  soulHandle = registerSoul(ctx, () => mergedConfig.soul ?? {
-    enabled: true,
-    persona: '你是「百变员工」：会根据所在房间的名称、讨论氛围与收到的消息，自动选择最合适的人设与语气（比如在技术群里像靠谱的研发、在需求讨论里像产品经理、面对新同事像乐于帮助的前辈）。你不需要固定一种性格。',
-    style: '',
-    catchphrase: '',
-    habits: '先理解当前对话的语境与对象，再选择合适的人设与语气；如果切换了人设，主动用一句话告知对方你现在以什么角色出现，并提示可以在「数字分身」设置页修改灵魂。',
-    replyLength: 'normal',
-  })
-  // 诊断：dump 灵魂配置（确认 twin_soul_status / system prompt 灵魂段有内容）。
-  try {
-    const soul = mergedConfig.soul
-    appendFileSync(
-      join(homedir(), '.dsh', 'dsh-matrix-diag.log'),
-      `${new Date().toISOString()} [dsh-matrix-agent:soul] enabled=${soul?.enabled} personaLen=${(soul?.persona ?? '').length} style=${soul?.style} replyLength=${soul?.replyLength} habitsLen=${(soul?.habits ?? '').length}\n`,
-      'utf8',
-    )
-  } catch { /* 忽略 */ }
 
   function startBridge(cfg: MatrixConfig, tok: string): void {
     // 幂等守卫：初次 applyUser 的 onConfigChange 与 apply 末尾的 initToken 检查
@@ -126,7 +97,6 @@ export function apply(ctx: Context, config: MatrixConfig): void {
       ...cfg,
       accessToken: tok,
       digitalTwins: twins,
-      soulHandle,
       updateTasksSnapshot: settingsHandle.updateTasksSnapshot,
       updateTimelineSnapshot: settingsHandle.updateTimelineSnapshot,
       onTimelineOpsHandled: settingsHandle.clearTimelineOps,
@@ -160,7 +130,6 @@ export function apply(ctx: Context, config: MatrixConfig): void {
   ctx.effect(() => {
     return () => {
       stopBridge()
-      soulHandle?.dispose()
       settingsHandle.dispose()
     }
   }, 'matrix-agent.teardown')

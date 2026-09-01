@@ -20,7 +20,7 @@ import z from '@deepseek-ai/schemastery'
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { Config, SoulConfig } from './config.js'
+import type { Config } from './config.js'
 import type { MatrixTask } from './store.js'
 
 /** 文件诊断日志（固定绝对路径 ~/.dsh/dsh-matrix-diag.log + stateDir/.dsh-matrix/diagnostics.log）。 */
@@ -87,19 +87,8 @@ export function emptySecretaryOps(): SecretaryOps | undefined {
   return undefined
 }
 
-/** 灵魂默认配置（与 config.ts 的 soul 默认值一致，默认百变员工）。 */
-export const DEFAULT_SOUL: SoulConfig = {
-  enabled: true,
-  persona: '你是「百变员工」：会根据所在房间的名称、讨论氛围与收到的消息，自动选择最合适的人设与语气（比如在技术群里像靠谱的研发、在需求讨论里像产品经理、面对新同事像乐于帮助的前辈）。你不需要固定一种性格。',
-  style: '',
-  catchphrase: '',
-  habits: '先理解当前对话的语境与对象，再选择合适的人设与语气；如果切换了人设，主动用一句话告知对方你现在以什么角色出现，并提示可以在「数字分身」设置页修改灵魂。',
-  replyLength: 'normal',
-}
-
 /**
  * 把 settings 用户层 merge 进 config（用户层字段存在即覆盖）。
- * `soul` 子字段做一层深合并（用户层 soul 子键存在即覆盖 base soul 子键）。
  */
 export function mergeMatrixConfig(base: Config, user: Record<string, unknown> | undefined): Config {
   if (user === undefined) return base
@@ -107,18 +96,6 @@ export function mergeMatrixConfig(base: Config, user: Record<string, unknown> | 
   const record = out as unknown as Record<string, unknown>
   for (const [key, value] of Object.entries(user)) {
     // 只接受 Config 顶层已有的键；类型收窄交给调用侧。
-    if (key === 'soul' && typeof value === 'object' && value !== null) {
-      const baseSoul = base.soul ?? DEFAULT_SOUL
-      record.soul = {
-        enabled: (value as Partial<SoulConfig>).enabled ?? baseSoul.enabled,
-        persona: (value as Partial<SoulConfig>).persona ?? baseSoul.persona,
-        style: (value as Partial<SoulConfig>).style ?? baseSoul.style,
-        catchphrase: (value as Partial<SoulConfig>).catchphrase ?? baseSoul.catchphrase,
-        habits: (value as Partial<SoulConfig>).habits ?? baseSoul.habits,
-        replyLength: (value as Partial<SoulConfig>).replyLength ?? baseSoul.replyLength,
-      }
-      continue
-    }
     if (key in base) {
       record[key] = value
     }
@@ -165,7 +142,6 @@ export const LIVE_APPLY_KEYS = new Set([
   'taskConfirmTimeoutSecs',
   'taskConfirmTimeoutAction',
   'taskConfirmExemptMatters',
-  'soul',
 ])
 
 /** 连接类字段名单：改动需重启才生效。 */
@@ -219,14 +195,12 @@ function pickMatrixBase(config: Config): Record<string, unknown> {
     twinModeRoomPrefix: config.twinModeRoomPrefix,
     secretaryGroupDefault: config.secretaryGroupDefault,
     secretaryDmDefault: config.secretaryDmDefault,
-    roomRoles: config.roomRoles,
     taskClarifyBeforeStart: config.taskClarifyBeforeStart,
     taskClarifyTimeoutSecs: config.taskClarifyTimeoutSecs,
     taskConfirmBeforeDeliver: config.taskConfirmBeforeDeliver,
     taskConfirmTimeoutSecs: config.taskConfirmTimeoutSecs,
     taskConfirmTimeoutAction: config.taskConfirmTimeoutAction,
     taskConfirmExemptMatters: config.taskConfirmExemptMatters,
-    soul: config.soul ?? DEFAULT_SOUL,
   }
 }
 
@@ -308,14 +282,6 @@ export function registerMatrixSettings(
         taskConfirmTimeoutSecs: z.number().default(600),
         taskConfirmTimeoutAction: z.union([z.const('hold'), z.const('deliver'), z.const('cancel')]).default('hold'),
         taskConfirmExemptMatters: z.array(z.string()).default([]),
-        soul: z.object({
-          enabled: z.boolean().default(true),
-          persona: z.string().default(''),
-          style: z.string().default('friendly'),
-          catchphrase: z.string().default(''),
-          habits: z.string().default(''),
-          replyLength: z.string().default('short'),
-        }).default(DEFAULT_SOUL),
         // 运行时只读镜像（非用户配置）：任务视图数据源。用 z.any 宽松校验
         // （任务形状由 Host 归一化，schema 只保证是个对象）。
         tasksSnapshot: z.any().default(emptyTasksSnapshot()),
