@@ -13,7 +13,7 @@ import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import { MatrixChannel } from './matrix.js'
+import type { Channel } from './matrix.js'
 import type { MatrixMember, MatrixUserInfo, MatrixRoomMessage } from './matrix.js'
 
 /** 轻量级工具诊断日志：写入 stateDir/diagnostics.log，不依赖 ctx.logger（工具层无 ctx 注入）。 */
@@ -49,7 +49,7 @@ export type MatrixToolName = typeof MATRIX_TOOL_NAMES[keyof typeof MATRIX_TOOL_N
 /** 通过 ctx.tools.register(definition) 注册矩阵工具的依赖。 */
 export interface MatrixToolDeps {
   /** Matrix 通道层，用于执行真实的 API 调用。 */
-  channel: MatrixChannel
+  channel: Channel
   /** sessionId → roomId 反查（来自 BridgeState 的 roomSessions 映射）。 */
   roomForSession: (sessionId: string) => string | undefined
   /**

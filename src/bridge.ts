@@ -24,7 +24,7 @@ import type { Config, DigitalTwinAccount } from './config.js'
 import { chunkText, markdownToHtml, formatToolCall, describeMedia, wantsProcess, formatToolResult, formatTurnEnd, formatRetry, formatRetryCircuitTripped, formatRules, isProviderFailure, formatProviderFailure } from './format.js'
 import type { Verbosity } from './format.js'
 import { MatrixChannel } from './matrix.js'
-import type { Channel, InboundMessage, MediaBlock, RoomEvent } from './matrix.js'
+import type { Channel, ChannelOptions, InboundMessage, MediaBlock, RoomEvent } from './matrix.js'
 import { getDiag } from './diag.js'
 import { ChatLog } from './chatlog.js'
 import { BridgeState } from './store.js'
@@ -385,6 +385,7 @@ export class AccountBridge {
     account: DigitalTwinAccount,
     allAccountIds: readonly string[],
     pendingRooms: Set<string>,
+    channelFactory: (opts: ChannelOptions) => Channel,
     soulHandle?: SoulHandle,
     timeline?: TwinTimeline,
     publishTasksSnapshot?: (snapshot: TasksSnapshot) => void,
@@ -419,7 +420,7 @@ export class AccountBridge {
       model: account.model !== '' ? account.model : config.model,
     }
 
-    this.channel = new MatrixChannel({
+    this.channel = channelFactory({
       homeserverUrl: config.homeserverUrl,
       accessToken: account.accessToken,
       userId: this.userId,
@@ -480,7 +481,7 @@ export class AccountBridge {
         this.diag.log(`${message}${rest}`)
       })
       applyMatrixTools(this.ctx, {
-        channel: this.channel as MatrixChannel,
+        channel: this.channel,
         roomForSession: (sessionId: string) => this.roomForSession(sessionId),
         approveProactiveSend: (toolName: string, args: Record<string, unknown>, exec: ToolRunContext) =>
           this.approveProactiveSend(toolName, args, exec),
@@ -2176,6 +2177,10 @@ export class MatrixBridge {
       ctx.logger.info('[dsh-matrix-agent] session namespace: %s', sessionNamespace)
     }
 
+    // 通道工厂：桥接层面向 Channel 接口，具体通道实现（MatrixChannel）在此注入。
+    // 后续接其它 IM 时，替换此工厂即可，AccountBridge 逻辑不变。
+    const channelFactory = (opts: ChannelOptions): Channel => new MatrixChannel(opts)
+
     // 1. 挂载主账号（保持 state.json 名字，向后兼容）。
     //    按用户架构：userId 即数字分身自己，owner 是真实人账号（仅在 Matrix 客户端登录）。
     const mainAccount: DigitalTwinAccount = {
@@ -2197,6 +2202,7 @@ export class MatrixBridge {
         mainAccount,
         allAccountIds,
         pendingRooms,
+        channelFactory,
         config.soulHandle,
         timeline,
         config.updateTasksSnapshot,
@@ -2225,6 +2231,7 @@ export class MatrixBridge {
           { ...twin, accessToken: token },
           allAccountIds,
           pendingRooms,
+          channelFactory,
           config.soulHandle,
           timeline,
           config.updateTasksSnapshot,

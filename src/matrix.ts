@@ -131,23 +131,25 @@ export interface Channel {
   sendDm?(userId: string, plain: string, html?: string): Promise<{ roomId: string; eventId?: string }>
   /** 向房间发送消息并 @ 一个或多个成员（HTML m.mention + 文本 @名字 兜底）。 */
   sendMentionText?(roomId: string, plain: string, mentions: string[], html?: string): Promise<void>
+  // ── 感知能力（通道必需契约，tools/桥接硬依赖，任何通道实现都须提供）──
   /** 判断是否为私聊房间（2 人房间）。 */
-  isDirectRoom?(roomId: string): Promise<boolean>
-  /** 读取房间名（m.room.name state）。 */
-  getRoomName?(roomId: string): Promise<string | undefined>
-  /** 房间当前成员数（joined_members）。仅用于群聊上下文标签，绝不全量注入消息。 */
-  getRoomMemberCount?(roomId: string): Promise<number | undefined>
-  /** 房间当前成员列表（joined_members）。供 agent 工具按需调用。 */
-  getRoomMembers?(roomId: string): Promise<MatrixMember[] | undefined>
+  isDirectRoom(roomId: string): Promise<boolean>
+  /** 读取房间名。 */
+  getRoomName(roomId: string): Promise<string | undefined>
+  /** 房间当前成员数。仅用于群聊上下文标签，绝不全量注入消息。 */
+  getRoomMemberCount(roomId: string): Promise<number | undefined>
+  /** 房间当前成员列表。供 agent 工具按需调用。 */
+  getRoomMembers(roomId: string): Promise<MatrixMember[] | undefined>
   /** 用户资料（displayname/avatar_url）。供 agent 工具按需调用。 */
-  getUserInfo?(userId: string): Promise<MatrixUserInfo | undefined>
-  /** 房间最近消息（/messages API，正序）。供 agent 工具按需调用。 */
-  getRecentMessages?(roomId: string, limit?: number): Promise<MatrixRoomMessage[]>
-  /** 列出本账号已加入的房间（/joined_rooms），附名称/成员数。供 agent 工具按需调用。 */
-  listJoinedRooms?(): Promise<Array<{ roomId: string; name?: string; memberCount?: number }>>
+  getUserInfo(userId: string): Promise<MatrixUserInfo | undefined>
+  /** 房间最近消息（正序）。供 agent 工具按需调用。 */
+  getRecentMessages(roomId: string, limit?: number): Promise<MatrixRoomMessage[]>
+  /** 列出本账号已加入的房间，附名称/成员数。供 agent 工具按需调用。 */
+  listJoinedRooms(): Promise<Array<{ roomId: string; name?: string; memberCount?: number }>>
+  // ── 媒体（可选增强；未提供时工具回退 base64 元信息）──
   /** 把 mxc:// URL 解析为可下载的 HTTP URL。 */
   resolveMediaUrl?(mxc: string): string | undefined
-  /** 下载 Matrix 媒体（mxc:// URL）为字节。供 agent 工具/桥接层按需调用。 */
+  /** 下载媒体（mxc:// URL）为字节。供 agent 工具/桥接层按需调用。 */
   downloadMedia?(mxc: string, signal?: AbortSignal): Promise<{ buffer: Uint8Array; mimetype?: string; size: number }>
 }
 
