@@ -12,7 +12,6 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import type { BridgeState } from './store.js'
 import { getDiag } from './diag.js'
 
 /**
@@ -81,11 +80,23 @@ export interface RoomEvent {
   readonly detail?: Record<string, unknown>
 }
 
+/**
+ * 通道层持久状态的最小契约：增量同步游标 + 事件去重环。
+ * 与桥接层状态（BridgeState）解耦：通道只关心「同步到哪了」和「哪些事件处理过」，
+ * 房间↔会话映射、工作目录、任务队列等桥接状态不在通道职责内。
+ * BridgeState 结构上兼容本接口（实现了这三个能力），可原样传入，无需迁移磁盘文件。
+ */
+export interface ChannelState {
+  syncToken: string | undefined
+  hasSeen(eventId: string): boolean
+  markSeen(eventId: string): void
+}
+
 export interface ChannelOptions {
   readonly homeserverUrl: string
   readonly accessToken: string
   readonly userId: string
-  readonly state: BridgeState
+  readonly state: ChannelState
   readonly onMessage?: (message: InboundMessage) => void
   /** 成员变化 / 资料变更 / 房间信息事件。桥接层按配置决定是否注入 agent。 */
   readonly onRoomEvent?: (event: RoomEvent) => void
