@@ -439,40 +439,6 @@ function MatrixSettingsPage(props) {
         : React.createElement(TimelineTab, { ctx })))
 }
 
-/** 任务状态中文标签与颜色。 */
-const TASK_STATUS_META = {
-  pending: { label: '⏳ 待审', color: 'var(--dsw-alias-state-warn-primary)' },
-  approved: { label: '✅ 已批准', color: 'var(--dsw-alias-brand-primary)' },
-  rejected: { label: '🚫 已拒绝', color: 'var(--dsw-alias-state-error-primary)' },
-  done: { label: '🏁 已完成', color: 'var(--dsw-alias-state-success-primary)' },
-  clarifying: { label: '🤔 请示中', color: 'var(--dsw-alias-state-warn-primary)' },
-  confirming: { label: '🔐 待确认', color: 'var(--dsw-alias-state-warn-primary)' },
-}
-function taskStatusMeta(status) {
-  return TASK_STATUS_META[status] ?? { label: status ?? '?', color: 'var(--dsw-alias-label-secondary)' }
-}
-
-/** 从 dsh-matrix settings 读任务快照（运行时镜像）。 */
-function useTasksSnapshot(ctx) {
-  const [scope] = React.useState(() => bindScope(ctx, MATRIX_NS))
-  const [snapshot, setSnapshot] = React.useState(undefined)
-  React.useEffect(() => {
-    const update = () => {
-      const section = sectionOf(scope)
-      // section 就绪但无快照字段：视为空快照（避免永久"加载中"）。
-      if (section !== undefined) {
-        setSnapshot(section.tasksSnapshot !== undefined
-          ? section.tasksSnapshot
-          : { rooms: {}, sessionRooms: {}, updatedAt: 0 })
-      }
-    }
-    update()
-    if (scope !== undefined) return scope.subscribe(update)
-    return undefined
-  }, [scope])
-  return snapshot
-}
-
 /** 从 dsh-matrix settings 读自我时间线快照（运行时镜像，仅元数据）。 */
 function useTimelineSnapshot(ctx) {
   const [scope] = React.useState(() => bindScope(ctx, MATRIX_NS))
@@ -592,6 +558,12 @@ function TimelineTab(props) {
             })))
 }
 
+/** 通用小按钮样式。 */
+const SMALL_BTN = {
+  padding: '2px 10px', borderRadius: '6px', border: 'none',
+  cursor: 'pointer', fontSize: '12px', whiteSpace: 'nowrap', marginTop: '1px',
+}
+
 /** 主人收件箱：读 ownerInbox 镜像，主人点「批准/交付/拒绝」写 ownerDecisionOps 命令。 */
 function OwnerInboxTab(props) {
   const ctx = props.ctx
@@ -649,236 +621,30 @@ function OwnerInboxTab(props) {
         }))
 }
 
-/** 任务列表渲染（供会话 tab 与所有任务面板共用）。 */
-const SMALL_BTN = {
-  padding: '2px 10px', borderRadius: '6px', border: 'none',
-  cursor: 'pointer', fontSize: '12px', whiteSpace: 'nowrap', marginTop: '1px',
-}
-
-function TaskRow(props) {
-  const { task, onApprove, onReject, roomLabel } = props
-  const meta = taskStatusMeta(task.status)
-  const when = task.createdAt ? new Date(task.createdAt).toLocaleString('zh-CN', { hour12: false }) : ''
-  return React.createElement('div', {
-    style: {
-      display: 'flex', alignItems: 'flex-start', gap: '8px',
-      padding: '8px', borderBottom: '1px solid var(--dsw-alias-border-l1)',
-    },
-  },
-    React.createElement('span', { style: { color: meta.color, fontSize: '12px', whiteSpace: 'nowrap', marginTop: '1px' } }, meta.label),
-    React.createElement('div', { style: { flex: 1, minWidth: 0 } },
-      React.createElement('div', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-primary)', wordBreak: 'break-word' } },
-        task.text.length > 80 ? task.text.slice(0, 80) + '…' : task.text),
-      React.createElement('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', marginTop: '2px' } },
-        (roomLabel !== undefined ? roomLabel + ' · ' : '') + task.sender + (when !== '' ? ' · ' + when : '') +
-        (task.note !== undefined && task.note !== '' ? ' · ' + task.note : '')),
-    ),
-    task.status === 'pending' && onApprove !== undefined
-      ? React.createElement('button', {
-          style: { ...SMALL_BTN, background: 'var(--dsw-alias-state-success-primary)', color: 'var(--dsw-alias-bg-base)' },
-          onClick: () => onApprove(task),
-        }, '批准')
-      : null,
-    task.status === 'pending' && onReject !== undefined
-      ? React.createElement('button', {
-          style: { ...SMALL_BTN, background: 'var(--dsw-alias-state-error-primary)', color: 'var(--dsw-alias-bg-base)' },
-          onClick: () => onReject(task),
-        }, '拒绝')
-      : null)
-}
-
-/** 向会话发 /approve /reject 命令（复用现有命令语义）。 */
-function runTaskCommand(ctx, sessionId, line) {
-  const session = ctx.get('sessions')?.binding?.(sessionId)?.session
-  if (session !== undefined && typeof session.command === 'function') {
-    session.command(line).catch(() => {})
-    return
-  }
-  // 兜底：无法直接命令，提示用户在房间操作。
-  window.alert('请在 Matrix 房间发送：' + line)
-}
-
-/** 会话「任务」tab：显示该会话（房间）的任务列表。 */
-function SessionTasksTab(props) {
-  const { sessionId } = props
-  const ctx = props.ctx
-  const snapshot = useTasksSnapshot(ctx)
-  // 经 sessionRooms 反查本会话对应的房间。
-  const roomId = snapshot !== undefined ? (snapshot.sessionRooms ?? {})[sessionId] : undefined
-  const tasks = roomId !== undefined && snapshot !== undefined
-    ? (snapshot.rooms ?? {})[roomId] ?? []
-    : []
-  const [filter, setFilter] = React.useState('all')
-
-  const filtered = filter === 'all' ? tasks : tasks.filter((t) => t.status === filter)
-  const counts = {}
-  tasks.forEach((t) => { counts[t.status] = (counts[t.status] ?? 0) + 1 })
-
-  return React.createElement('div', null,
-    React.createElement('p', { style: HINT_STYLE },
-      '本会话（房间）的任务。任务来自 Matrix 房间里同事发来的工作请求，经审批后由分身执行。'),
-    React.createElement('div', { style: { display: 'flex', gap: '6px', marginBottom: '8px', flexWrap: 'wrap' } },
-      ['all', 'pending', 'approved', 'done', 'rejected', 'clarifying', 'confirming'].map((s) =>
-        React.createElement('button', {
-          key: s,
-          onClick: () => setFilter(s),
-          style: {
-            padding: '3px 10px', borderRadius: '999px', cursor: 'pointer', fontSize: '12px',
-            border: '1px solid var(--dsw-alias-border-l1)',
-            background: filter === s ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-bg-layer-1)',
-            color: filter === s ? 'var(--dsw-alias-bg-base)' : 'var(--dsw-alias-label-primary)',
-          },
-        }, (s === 'all' ? '全部' : taskStatusMeta(s).label) +
-           (s !== 'all' && counts[s] !== undefined ? ' (' + counts[s] + ')' : '')))),
-    roomId === undefined
-      ? React.createElement('p', { style: HINT_STYLE },
-          '本会话不是 Matrix 房间会话，或暂无任务快照。')
-      : filtered.length === 0
-        ? React.createElement('p', { style: HINT_STYLE }, '本会话暂无任务。')
-        : React.createElement('div', { style: { border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px' } },
-            filtered.map((task) =>
-              React.createElement(TaskRow, {
-                key: task.id, task,
-                onApprove: () => runTaskCommand(ctx, sessionId, '/approve ' + (tasks.indexOf(task) + 1)),
-                onReject: () => runTaskCommand(ctx, sessionId, '/reject ' + (tasks.indexOf(task) + 1)),
-              }))))
-}
-
-/** 所有任务面板：聚合所有会话任务，按状态分组。 */
-function AllTasksPanel(props) {
-  const { ctx, onClose } = props
-  const snapshot = useTasksSnapshot(ctx)
-  const [filter, setFilter] = React.useState('all')
-  const [selectedSession, setSelectedSession] = React.useState(undefined)
-
-  const allTasks = []
-  if (snapshot !== undefined) {
-    for (const [roomId, tasks] of Object.entries(snapshot.rooms ?? {})) {
-      tasks.forEach((t) => allTasks.push({ task: t, roomId }))
-    }
-  }
-  // 按状态过滤。
-  const visible = filter === 'all' ? allTasks : allTasks.filter((x) => x.task.status === filter)
-  // 按 createdAt 降序（最新在前）。
-  visible.sort((a, b) => (b.task.createdAt ?? 0) - (a.task.createdAt ?? 0))
-  const pendingCount = allTasks.filter((x) => x.task.status === 'pending').length
-
-  const openSession = (roomId) => {
-    // roomId → sessionId（反查）。
-    let sid
-    if (snapshot !== undefined) {
-      for (const [k, v] of Object.entries(snapshot.sessionRooms ?? {})) {
-        if (v === roomId) { sid = k; break }
-      }
-    }
-    if (sid !== undefined && ctx.get('sessions')?.open !== undefined) {
-      ctx.get('sessions').open(sid)
-    } else if (typeof onClose === 'function') {
-      onClose()
-    }
-  }
-
-  return React.createElement('div', {
-    style: {
-      position: 'fixed', top: '56px', right: '16px', width: '480px', maxWidth: '90vw',
-      maxHeight: '80vh', overflowY: 'auto', zIndex: 1000,
-      background: 'var(--dsw-alias-bg-layer-1)', border: '1px solid var(--dsw-alias-border-l2)',
-      borderRadius: '10px', boxShadow: '0 8px 30px rgba(0,0,0,0.3)', padding: '14px',
-    },
-  },
-    React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' } },
-      React.createElement('h3', { style: { margin: 0, fontSize: '14px', color: 'var(--dsw-alias-label-primary)' } },
-        '所有任务' + (pendingCount > 0 ? '（待审 ' + pendingCount + '）' : '')),
-      React.createElement('button', {
-        onClick: onClose,
-        style: { ...SMALL_BTN, background: 'transparent', border: '1px solid var(--dsw-alias-border-l1)', color: 'var(--dsw-alias-label-primary)' },
-      }, '✕')),
-    React.createElement('div', { style: { display: 'flex', gap: '6px', marginBottom: '8px', flexWrap: 'wrap' } },
-      ['all', 'pending', 'approved', 'done', 'rejected', 'clarifying', 'confirming'].map((s) =>
-        React.createElement('button', {
-          key: s,
-          onClick: () => setFilter(s),
-          style: {
-            padding: '3px 10px', borderRadius: '999px', cursor: 'pointer', fontSize: '12px',
-            border: '1px solid var(--dsw-alias-border-l1)',
-            background: filter === s ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-bg-layer-1)',
-            color: filter === s ? 'var(--dsw-alias-bg-base)' : 'var(--dsw-alias-label-primary)',
-          },
-        }, s === 'all' ? '全部' : taskStatusMeta(s).label))),
-    snapshot === undefined
-      ? React.createElement('p', { style: HINT_STYLE }, '任务数据加载中…')
-      : visible.length === 0
-        ? React.createElement('p', { style: HINT_STYLE }, '暂无任务。')
-        : React.createElement('div', { style: { border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px' } },
-            visible.map(({ task, roomId }) =>
-              React.createElement(TaskRow, {
-                key: task.id, task,
-                roomLabel: '房间 ' + (roomId.length > 12 ? roomId.slice(0, 12) + '…' : roomId),
-                onApprove: () => {
-                  // 定位会话并执行 /approve（序号 = 该房间 pending 列表中的位置）。
-                  let sid
-                  if (snapshot !== undefined) {
-                    for (const [k, v] of Object.entries(snapshot.sessionRooms ?? {})) {
-                      if (v === roomId) { sid = k; break }
-                    }
-                  }
-                  const roomTasks = snapshot !== undefined ? (snapshot.rooms ?? {})[roomId] ?? [] : []
-                  const pending = roomTasks.filter((t) => t.status === 'pending')
-                  const idx = pending.indexOf(task)
-                  if (sid !== undefined && idx >= 0) runTaskCommand(ctx, sid, '/approve ' + (idx + 1))
-                },
-                onReject: () => {
-                  let sid
-                  if (snapshot !== undefined) {
-                    for (const [k, v] of Object.entries(snapshot.sessionRooms ?? {})) {
-                      if (v === roomId) { sid = k; break }
-                    }
-                  }
-                  const roomTasks = snapshot !== undefined ? (snapshot.rooms ?? {})[roomId] ?? [] : []
-                  const pending = roomTasks.filter((t) => t.status === 'pending')
-                  const idx = pending.indexOf(task)
-                  if (sid !== undefined && idx >= 0) runTaskCommand(ctx, sid, '/reject ' + (idx + 1))
-                },
-              }))))
-}
-
-/** 「所有任务」入口按钮（会话头部 actions）。 */
-function AllTasksButton(props) {
-  const ctx = props.ctx
-  const snapshot = useTasksSnapshot(ctx)
-  const [open, setOpen] = React.useState(false)
-  const pendingCount = snapshot !== undefined
-    ? Object.values(snapshot.rooms ?? {}).flat().filter((t) => t.status === 'pending').length
-    : 0
-  return React.createElement(React.Fragment, null,
-    React.createElement('button', {
-      onClick: () => setOpen((v) => !v),
-      style: {
-        padding: '4px 10px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px',
-        border: '1px solid var(--dsw-alias-border-l1)',
-        background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-primary)',
-        position: 'relative',
-      },
-    },
-      '所有任务' + (pendingCount > 0 ? ' · ' + pendingCount : '')),
-    open ? React.createElement(AllTasksPanel, { ctx, onClose: () => setOpen(false) }) : null)
-}
-
-/** 秘书工作台：侧栏脚部入口（设置旁），带待办角标（请示中+待确认任务数）。 */
-/** 秘书工作台入口：侧栏脚部（设置右侧），样式对齐设置（图标 + 文字，窄态仅图标 + 待办角标）。 */
+/** 秘书工作台入口：侧栏/头部快捷入口，带待批角标（收件箱待批数）。 */
 function SecretaryDeskButton(props) {
   const ctx = props.ctx
   const wide = props.wide !== false
-  const snapshot = useTasksSnapshot(ctx)
+  const [scope] = React.useState(() => bindScope(ctx, MATRIX_NS))
+  const [inbox, setInbox] = React.useState(undefined)
+  React.useEffect(() => {
+    const update = () => {
+      const section = sectionOf(scope)
+      if (section !== undefined) {
+        setInbox(section.ownerInbox !== undefined ? section.ownerInbox : { items: [], updatedAt: 0 })
+      }
+    }
+    update()
+    if (scope !== undefined) return scope.subscribe(update)
+    return undefined
+  }, [scope])
   const [open, setOpen] = React.useState(false)
-  const attention = snapshot !== undefined
-    ? Object.values(snapshot.rooms ?? {}).flat().filter((t) => t.status === 'clarifying' || t.status === 'confirming').length
-    : 0
+  const attention = inbox !== undefined ? (inbox.items ?? []).length : 0
   return React.createElement(React.Fragment, null,
     React.createElement('button', {
       onClick: () => setOpen((v) => !v),
-      title: '秘书工作台：任务流转 + 自我记忆',
-      'aria-label': '秘书工作台' + (attention > 0 ? '（' + attention + ' 待处理）' : ''),
+      title: '秘书工作台：主人收件箱 + 自我记忆',
+      'aria-label': '秘书工作台' + (attention > 0 ? '（' + attention + ' 待批）' : ''),
       style: {
         display: 'flex', alignItems: 'center', gap: '6px',
         padding: wide ? '6px 12px' : '6px',
@@ -903,86 +669,11 @@ function SecretaryDeskButton(props) {
     open ? React.createElement(SecretaryDeskPanel, { ctx, onClose: () => setOpen(false) }) : null)
 }
 
-/** 秘书工作台分屏大面板：左侧延伸列（贴 sidebar），含「任务」「时间线」双 tab。 */
-/** 秘书工作台大尺寸面板：占可视区 ~68% 宽、全高、两栏（左任务列表 + 右详情/操作），含「任务」「时间线」双 tab。 */
+/** 秘书工作台大尺寸面板：含「收件箱」「时间线」两个 tab（彻底分层后无任务队列）。 */
 function SecretaryDeskPanel(props) {
   const { ctx, onClose } = props
-  const [scope] = React.useState(() => bindScope(ctx, MATRIX_NS))
-  const [snapshot, setSnapshot] = React.useState(undefined)
-  React.useEffect(() => {
-    const update = () => {
-      const section = sectionOf(scope)
-      if (section !== undefined && section.tasksSnapshot !== undefined) setSnapshot(section.tasksSnapshot)
-    }
-    update()
-    if (scope !== undefined) return scope.subscribe(update)
-    return undefined
-  }, [scope])
-  const [tab, setTab] = React.useState('tasks')
-  const [group, setGroup] = React.useState('all')
-  const [selectedId, setSelectedId] = React.useState(undefined)
-  // 左栏宽度占比（%），可拖拽分隔条调整（28–72）。
-  const [leftPct, setLeftPct] = React.useState(44)
-  const dragRef = React.useRef({ dragging: false })
-
-  const startDrag = (e) => {
-    e.preventDefault()
-    const container = e.currentTarget.parentElement
-    if (container === null) return
-    dragRef.current.dragging = true
-    const move = (ev) => {
-      if (!dragRef.current.dragging) return
-      const rect = container.getBoundingClientRect()
-      const pct = ((ev.clientX - rect.left) / rect.width) * 100
-      setLeftPct(Math.max(28, Math.min(72, Math.round(pct))))
-    }
-    const up = () => {
-      dragRef.current.dragging = false
-      window.removeEventListener('mousemove', move)
-      window.removeEventListener('mouseup', up)
-      document.body.style.cursor = ''
-    }
-    document.body.style.cursor = 'col-resize'
-    window.addEventListener('mousemove', move)
-    window.addEventListener('mouseup', up)
-  }
-
-  const allTasks = []
-  if (snapshot !== undefined) {
-    for (const [roomId, tasks] of Object.entries(snapshot.rooms ?? {})) {
-      tasks.forEach((t) => allTasks.push({ task: t, roomId }))
-    }
-  }
-  const visible = group === 'all' ? allTasks : allTasks.filter((x) => x.task.status === group)
-  visible.sort((a, b) => (b.task.createdAt ?? 0) - (a.task.createdAt ?? 0))
-  const count = (s) => allTasks.filter((x) => x.task.status === s).length
-  const attention = count('clarifying') + count('confirming')
-  const selected = allTasks.find((x) => x.task.id === selectedId)
-
-  const sendOps = (taskId, action, extra) => {
-    if (scope === undefined) return
-    scope.set('secretaryOps', { taskId, action, ...(extra !== undefined ? extra : {}) }).catch(() => {})
-  }
-  const askText = (taskId, action, prompt) => {
-    const v = window.prompt(prompt)
-    if (v !== null && v.trim() !== '') sendOps(taskId, action, { text: v.trim() })
-  }
-  const askCwd = (taskId) => {
-    const v = window.prompt('输入该任务的工作目录（绝对路径）：')
-    if (v !== null && v.trim() !== '') sendOps(taskId, 'set-cwd', { cwd: v.trim() })
-  }
-
-  const groups = [
-    { id: 'all', label: '全部' },
-    { id: 'pending', label: '待审 (' + count('pending') + ')' },
-    { id: 'clarifying', label: '🤔 请示中 (' + count('clarifying') + ')' },
-    { id: 'approved', label: '执行中 (' + count('approved') + ')' },
-    { id: 'confirming', label: '🔐 待确认 (' + count('confirming') + ')' },
-    { id: 'done', label: '完成 (' + count('done') + ')' },
-    { id: 'rejected', label: '已拒绝 (' + count('rejected') + ')' },
-  ]
+  const [tab, setTab] = React.useState('inbox')
   const tabs = [
-    { id: 'tasks', label: '任务' },
     { id: 'inbox', label: '收件箱' },
     { id: 'timeline', label: '时间线' },
   ]
@@ -995,7 +686,7 @@ function SecretaryDeskPanel(props) {
     React.createElement('div', {
       style: {
         position: 'fixed', top: 0, bottom: 0, right: 0,
-        width: 'min(960px, 68vw)', minWidth: '720px', maxWidth: '100vw', zIndex: 1000,
+        width: 'min(720px, 56vw)', minWidth: '560px', maxWidth: '100vw', zIndex: 1000,
         background: 'var(--dsw-alias-bg-layer-1)',
         borderLeft: '1px solid var(--dsw-alias-border-l2)',
         boxShadow: '-8px 0 32px rgba(0,0,0,0.25)',
@@ -1009,7 +700,7 @@ function SecretaryDeskPanel(props) {
         },
       },
         React.createElement('h3', { style: { margin: 0, fontSize: '16px', color: 'var(--dsw-alias-label-primary)', whiteSpace: 'nowrap' } },
-          '秘书工作台' + (attention > 0 ? '（待你处理 ' + attention + '）' : '')),
+          '秘书工作台'),
         React.createElement('div', { style: { display: 'flex', gap: '2px' } },
           tabs.map((t) =>
             React.createElement('button', {
@@ -1031,162 +722,18 @@ function SecretaryDeskPanel(props) {
       tab === 'timeline'
         ? React.createElement('div', { style: { flex: 1, overflowY: 'auto', padding: '16px 20px' } },
             React.createElement(TimelineTab, { ctx }))
-        : tab === 'inbox'
-          ? React.createElement('div', { style: { flex: 1, overflowY: 'auto', padding: '16px 20px' } },
-              React.createElement(OwnerInboxTab, { ctx }))
-          : React.createElement('div', { style: { flex: 1, display: 'flex', minHeight: 0 } },
-            React.createElement('div', { style: { width: leftPct + '%', borderRight: '1px solid var(--dsw-alias-border-l1)', display: 'flex', flexDirection: 'column', minHeight: 0 } },
-              React.createElement('div', { style: { padding: '12px 16px', borderBottom: '1px solid var(--dsw-alias-border-l1)', display: 'flex', gap: '6px', flexWrap: 'wrap' } },
-                groups.map((g) =>
-                  React.createElement('button', {
-                    key: g.id,
-                    onClick: () => setGroup(g.id),
-                    style: {
-                      padding: '3px 10px', borderRadius: '999px', cursor: 'pointer', fontSize: '12px',
-                      border: '1px solid var(--dsw-alias-border-l1)',
-                      background: group === g.id ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-bg-layer-1)',
-                      color: group === g.id ? 'var(--dsw-alias-bg-base)' : 'var(--dsw-alias-label-primary)',
-                    },
-                  }, g.label))),
-              React.createElement('div', { style: { flex: 1, overflowY: 'auto' } },
-                snapshot === undefined
-                  ? React.createElement('p', { style: HINT_STYLE, padding: '12px 16px' }, '任务数据加载中…')
-                  : visible.length === 0
-                    ? React.createElement('p', { style: HINT_STYLE, padding: '12px 16px' }, '暂无任务。')
-                    : visible.map(({ task, roomId }) => {
-                        const meta = taskStatusMeta(task.status)
-                        const roomLabel = roomId.length > 16 ? roomId.slice(0, 16) + '…' : roomId
-                        const roleLabel = task.role !== undefined && task.role !== '' ? task.role : 'dynamic'
-                        const noCwd = task.cwd === undefined && (task.status === 'pending' || task.status === 'clarifying')
-                        const isSel = task.id === selectedId
-                        return React.createElement('div', {
-                          key: task.id,
-                          onClick: () => setSelectedId(task.id),
-                          style: {
-                            display: 'flex', alignItems: 'flex-start', gap: '8px',
-                            padding: '10px 16px', borderBottom: '1px solid var(--dsw-alias-border-l1)',
-                            cursor: 'pointer',
-                            background: isSel ? 'var(--dsw-alias-bg-layer-2)' : 'transparent',
-                          },
-                        },
-                          React.createElement('span', { style: { color: meta.color, fontSize: '12px', whiteSpace: 'nowrap', marginTop: '1px' } }, meta.label),
-                          React.createElement('div', { style: { flex: 1, minWidth: 0 } },
-                            React.createElement('div', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-primary)', wordBreak: 'break-word' } },
-                              task.text.length > 50 ? task.text.slice(0, 50) + '…' : task.text),
-                            React.createElement('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', marginTop: '2px' } },
-                              '角色:' + roleLabel + ' · ' + roomLabel + ' · ' + task.sender +
-                              (noCwd ? ' · ⚠️ 未设目录' : '') +
-                              (task.note !== undefined && task.note !== '' ? ' · ' + task.note.slice(0, 30) : ''))))
-                      })),
-            ),
-            // 可拖拽分隔条：调整左右栏宽度比例。
-            React.createElement('div', {
-              onMouseDown: startDrag,
-              style: {
-                width: '6px', cursor: 'col-resize', flexShrink: 0,
-                background: 'transparent', position: 'relative',
-              },
-            },
-              React.createElement('div', {
-                style: {
-                  position: 'absolute', top: 0, bottom: 0, left: '2px', width: '2px',
-                  background: 'var(--dsw-alias-border-l1)', pointerEvents: 'none',
-                },
-              })),
-            React.createElement('div', { style: { flex: 1, overflowY: 'auto', padding: '16px 20px' } },
-              selected === undefined
-                ? React.createElement('div', null,
-                    React.createElement('p', { style: HINT_STYLE }, '选择左侧任务查看详情并处理。'),
-                    React.createElement('div', { style: { display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '16px' } },
-                      groups.filter((g) => g.id !== 'all').map((g) =>
-                        React.createElement('div', {
-                          key: g.id,
-                          style: {
-                            padding: '12px 16px', borderRadius: '8px',
-                            border: '1px solid var(--dsw-alias-border-l1)',
-                            background: 'var(--dsw-alias-bg-layer-1)',
-                            fontSize: '13px', color: 'var(--dsw-alias-label-primary)',
-                          },
-                        }, g.label))))
-                : React.createElement('div', null,
-                    React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' } },
-                      React.createElement('span', { style: { color: taskStatusMeta(selected.task.status).color, fontSize: '14px', fontWeight: 600 } },
-                        taskStatusMeta(selected.task.status).label),
-                      React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } },
-                        '角色:' + (selected.task.role !== undefined && selected.task.role !== '' ? selected.task.role : 'dynamic'))),
-                    React.createElement('div', { style: { fontSize: '14px', color: 'var(--dsw-alias-label-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginBottom: '12px' } },
-                      selected.task.text),
-                    React.createElement('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', lineHeight: '1.8' } },
-                      React.createElement('div', null, '房间：' + selected.roomId),
-                      React.createElement('div', null, '发起人：' + selected.task.sender),
-                      React.createElement('div', null, '工作目录：' + (selected.task.cwd !== undefined ? selected.task.cwd : '（未设定）')),
-                      selected.task.clarifyReply !== undefined
-                        ? React.createElement('div', null, '老板指示：' + selected.task.clarifyReply)
-                        : null,
-                      selected.task.confirmReply !== undefined
-                        ? React.createElement('div', null, '老板意见：' + selected.task.confirmReply)
-                        : null,
-                      selected.task.note !== undefined
-                        ? React.createElement('div', null, '备注：' + selected.task.note)
-                        : null),
-                    React.createElement('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '16px' } },
-                      (selected.task.cwd === undefined && (selected.task.status === 'pending' || selected.task.status === 'clarifying'))
-                        ? React.createElement('button', {
-                            style: { ...SMALL_BTN, background: 'var(--dsw-alias-state-warn-primary)', color: 'var(--dsw-alias-bg-base)', padding: '6px 14px', fontSize: '13px' },
-                            onClick: () => askCwd(selected.task.id),
-                          }, '📁 设工作目录')
-                        : null,
-                      selected.task.status === 'clarifying'
-                        ? React.createElement(React.Fragment, null,
-                            React.createElement('button', {
-                              style: { ...SMALL_BTN, background: 'var(--dsw-alias-state-success-primary)', color: 'var(--dsw-alias-bg-base)', padding: '6px 14px', fontSize: '13px' },
-                              onClick: () => sendOps(selected.task.id, 'approve-start'),
-                            }, '✅ 批准开工'),
-                            React.createElement('button', {
-                              style: { ...SMALL_BTN, background: 'var(--dsw-alias-brand-primary)', color: 'var(--dsw-alias-bg-base)', padding: '6px 14px', fontSize: '13px' },
-                              onClick: () => askText(selected.task.id, 'give-instruction', '给开工指示（可多轮，直到批准开工）：'),
-                            }, '💬 给指示'))
-                        : selected.task.status === 'confirming'
-                          ? React.createElement(React.Fragment, null,
-                              React.createElement('button', {
-                                style: { ...SMALL_BTN, background: 'var(--dsw-alias-state-success-primary)', color: 'var(--dsw-alias-bg-base)', padding: '6px 14px', fontSize: '13px' },
-                                onClick: () => sendOps(selected.task.id, 'confirm-deliver'),
-                              }, '✅ 确认交付'),
-                              React.createElement('button', {
-                                style: { ...SMALL_BTN, background: 'var(--dsw-alias-state-warn-primary)', color: 'var(--dsw-alias-bg-base)', padding: '6px 14px', fontSize: '13px' },
-                                onClick: () => askText(selected.task.id, 'give-feedback', '给修改意见（修订后再确认）：'),
-                              }, '💬 给意见'))
-                          : selected.task.status === 'pending'
-                            ? React.createElement(React.Fragment, null,
-                                React.createElement('button', {
-                                  style: { ...SMALL_BTN, background: 'var(--dsw-alias-state-success-primary)', color: 'var(--dsw-alias-bg-base)', padding: '6px 14px', fontSize: '13px' },
-                                  onClick: () => sendOps(selected.task.id, 'approve'),
-                                }, '✅ 批准'),
-                                React.createElement('button', {
-                                  style: { ...SMALL_BTN, background: 'var(--dsw-alias-state-error-primary)', color: 'var(--dsw-alias-bg-base)', padding: '6px 14px', fontSize: '13px' },
-                                  onClick: () => sendOps(selected.task.id, 'reject'),
-                                }, '🚫 拒绝'))
-                            : null,
-                    ),
-              ),
-            ),
-          ),
-    ),
+        : React.createElement('div', { style: { flex: 1, overflowY: 'auto', padding: '16px 20px' } },
+            React.createElement(OwnerInboxTab, { ctx })))
   )
 }
 
-/** 插件入口：注册设置页 + 会话任务 tab + 所有任务入口/面板 + 秘书工作台。 */
+/** 插件入口：注册设置页 + 秘书工作台。 */
 export function apply(ctx) {
   ctx.slots.inject('settings.section', () => ctx.slots.register(
     { name: 'settings.section', id: 'dsh-matrix', order: 30, label: () => '数字分身' },
     (props) => React.createElement(MatrixSettingsPage, Object.assign({ ctx }, props)),
   ))
-  // 会话「任务」tab：加在 对话/轨迹/树状视图 之后。
-  ctx.slots.inject('conversation.view', () => ctx.slots.register(
-    { name: 'conversation.view', id: 'tasks', order: 30, label: () => '任务' },
-    (props) => React.createElement(SessionTasksTab, Object.assign({ ctx }, props)),
-  ))
-  // 秘书工作台：会话头部快捷入口（右上角工具位），打开大尺寸面板（任务/时间线）。
+  // 秘书工作台：会话头部快捷入口（右上角工具位），打开面板（收件箱/时间线）。
   ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register(
     { name: 'conversation.session.header.utilities', id: 'secretary-desk', order: 30, label: () => '秘书工作台' },
     (props) => React.createElement(SecretaryDeskButton, Object.assign({ ctx, wide: true }, props)),

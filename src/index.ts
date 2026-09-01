@@ -24,7 +24,7 @@ import { MatrixBridge } from '@evlon/dsh-bridge'
 import type { Config as MatrixConfig, DigitalTwinAccount } from '@evlon/dsh-bridge'
 import { resolveStateDir } from '@evlon/dsh-bridge'
 import { registerMatrixSettings } from '@evlon/dsh-bridge'
-import type { TimelineOps, SecretaryOps, OwnerDecisionOps } from '@evlon/dsh-bridge'
+import type { TimelineOps, OwnerDecisionOps } from '@evlon/dsh-bridge'
 
 // 向后兼容 re-export：把 @evlon/dsh-bridge 的桥接层/支撑类型面转发出去，
 // 保持 dsh-matrix-agent 旧 import 路径（如 `dsh-matrix-agent/bridge`）不破坏。
@@ -66,9 +66,6 @@ export function apply(ctx: Context, config: MatrixConfig): void {
     onTimelineOps: (ops: TimelineOps) => {
       bridgeRef?.handleTimelineOps(ops)
     },
-    onSecretaryOps: (ops: SecretaryOps) => {
-      bridgeRef?.handleSecretaryOps(ops)
-    },
     onOwnerDecisionOps: (ops: OwnerDecisionOps) => {
       bridgeRef?.handleOwnerDecisionOps(ops)
     },
@@ -96,11 +93,9 @@ export function apply(ctx: Context, config: MatrixConfig): void {
       ...cfg,
       accessToken: tok,
       digitalTwins: twins,
-      updateTasksSnapshot: settingsHandle.updateTasksSnapshot,
       updateTimelineSnapshot: settingsHandle.updateTimelineSnapshot,
       updateOwnerInbox: settingsHandle.updateOwnerInbox,
       onTimelineOpsHandled: settingsHandle.clearTimelineOps,
-      onSecretaryOpsHandled: settingsHandle.clearSecretaryOps,
       onOwnerDecisionOpsHandled: settingsHandle.clearOwnerDecisionOps,
     })
     bridgeRef = bridge

@@ -117,10 +117,10 @@ test-system/     # 独立测试系统（真实 homeserver + AI 同事 + 断言�
 - **数字分身灵魂**：`soul.*` 配置（性格/风格/口头禅/习惯）经 `agentSetup` 注入每个 room agent 的 system prompt（section `twin:soul`，仅 Matrix 会话生效，不污染 GUI）；行为统计（回复数/工具调用/活跃时间）按 `matrix-` 前缀 session 聚合，分身可调用 `twin_soul_status` 工具读取自身人设与统计
 - **社交记忆**：分身被邀请入群后按 `selfIntroTemplate` 主动 @ 成员自我介绍（上限 `maxSelfIntroMentions`）；`memberMemory` 开启时记住每个房间里见过的成员（含其他数字人），`/memory` 查看、`/forget <userId>` 忘记；`autoGreet` 开启时新成员入群会提示 agent 主动打招呼了解对方
 - **DSH Web 设置界面（单入口 + 标签页）**：Client 半注册一个「数字分身」设置页（`settings.section` `dsh-matrix`），内部三个标签页——**Matrix 账号**（连接/模型路由/白名单）、**社交**（自我介绍/成员记忆/打招呼/测试房间前缀）、**时间线**（自我记忆查看/筛选/删除/清空）。配置统一持久化到 `dsh-matrix` settings namespace（连接类字段需重启生效）。可选项尽量用下拉：`provider`/`model` 来自 dsh 运行时目录（`llm.providers`/`llm.models`），`agentPreset` 来自 `agentPresets.list`；**Owner 提供默认值提示**——分身账号为 `@ai-xxxxxx` 时提示默认主人 `@xxxxxx`（仅配置页辅助，运行期不推导，显式配置优先）。**岗位人设与秘书工作流不再在此注入**——由岗位 preset（`agentPreset` 指向 `@evlon/dsh-job-presets` 的 pm/dev/qa/leader/newbie）承载
-- **任务视图（会话「任务」tab + 全局「所有任务」）**：点击 Matrix 会话后，在「对话 / 轨迹 / 树状视图」后新增「任务」tab，展示该房间任务列表与状态（待审/已批/执行中/完成/拒绝），支持「批准/拒绝」按钮（复用 `/approve N` `/reject N` 命令语义）；会话头部「所有任务」按钮弹出全局面板，聚合**所有会话**的任务、按状态筛选、点击跳转对应会话。数据源为 Host 把各房间任务队列写入 `dsh-matrix` settings 的 **`tasksSnapshot` 运行时镜像**（非用户配置；任务变更防抖 300ms 更新）
+- **主人收件箱（DSH 侧待批列表 + 双通道决策）**：分身每次「请示/汇报」都会进入 `ownerInbox` 运行时镜像，秘书工作台「收件箱」tab 集中显示待批事项，主人点「✅ 批准开工/交付」或「🚫 拒绝」即写 `ownerDecisionOps` 命令回传。与 Matrix 私聊回复等价——两者都 resolve 同一个阻塞决策，让 agent 在**同一 turn 内**拿到结果继续发群。请示/汇报/决策同时沉淀到独立秘书会话（`matrix-<localpart>-secretary`，DSH 里可查看完整历史）
 - **自我时间线（跨房间记忆，防脑裂）**：记录分身自己的出站动作——回复、工具调用、主动消息、自我介绍、审批、任务推送——到 `twin-timeline.jsonl`（**仅结构化元数据：kind/roomId/时间/工具名/长度/主体，不落盘任何聊天原文**，守住「聊天内容不落盘」红线）。**按主体分层**：`actor: secretary`（秘书的请示/确认/交付调度）vs `worker`（干活会话的执行回复/工具），`twin_timeline` 工具与时间线 UI 均可按主体筛选。**逐级暴露**：① 常驻 system prompt 段 `twin:memory`（恒定提示词，字节永不变化，不影响 KV 缓存命中率，仅告知"你有自我记忆可查"）；② 分身用 `twin_timeline` 工具查行动摘要；③ 细节用 `matrix_get_recent_messages` 现查对应房间。设置页「数字分身 → 时间线」tab 可查看/筛选（类型/主体/房间）/**删除单条/清空全部**（经 settings `timelineOps` 命令字段，Host 处理后清零）。配置：`timelineEnabled`（记录开关）、`timelineInject`（常驻提示词段开关）、`timelineCrossRoom`（跨房间共享门控，默认隔离）、`timelineCap`（内存上限）
-- **秘书编排（彻底分层）**：数字员工（有 owner）收到群任务时，agent 按岗位 skill 用原子工具自行完成「请示→读数据→整理→私发→等交付→发群」闭环：`matrix_request_owner_decision` 私下请示主人开工 → `matrix_set_room_cwd`/`matrix_list_workspace_files`/`matrix_read_workspace_file` 读真实数据整理 → `matrix_report_owner` 私下汇报完整结果等主人「交付」 → `matrix_send_room_message` 发群交付。bridge 只守两条红线：① 出站分流（assistant/message 内心独白吞掉，不自动发群）；② 交付授权门控（主人未回「交付」前 `matrix_send_room_message` 拒绝，防跳过请示直接发群）。**群里只见自然的人话 + 最终交付物，绝无「请示/待审/等老板」泄露**
-- **秘书工作台 UI（大尺寸面板，合理利用桌面可视区）**：入口——**会话头部右上角快捷入口**（`conversation.session.header.utilities`）。点击弹出**大尺寸面板**（占可视区 ~68% 宽、全高、右滑 + 遮罩），**两栏布局（中间分隔条可拖拽调宽度，28%–72%）**：左栏任务列表（按流转分组：待审/🤔请示中/执行中/🔐待确认/完成/已拒绝，每行状态/角色/房间/工作目录状态）、右栏选中任务详情（完整文本/角色/房间/发起人/工作目录/老板指示与意见历史/操作按钮）。**任务 tab**：老板直接「批准开工/给指示/确认交付/给意见/批准/拒绝」+ **设工作目录**（未设目录任务输入路径绑定 cwd，等价于拖到工作区）；**时间线 tab**：自我记忆（主体秘书/干活筛选、删除/清空）。操作经 settings `secretaryOps` 命令字段（含 `set-cwd`），Host 处理后清零。私聊回复仍保留为备选（状态机幂等）。会话头部「所有任务」按钮已移除，由工作台统一
+- **秘书编排（彻底分层）**：数字员工（有 owner）收到群任务时，agent 按岗位 skill 用原子工具自行完成「请示→读数据→整理→私发→等交付→发群」闭环：`matrix_request_owner_decision` 私下请示主人开工 → `matrix_set_room_cwd`/`matrix_list_workspace_files`/`matrix_read_workspace_file` 读真实数据整理 → `matrix_report_owner` 私下汇报完整结果等主人「交付」 → `matrix_send_room_message` 发群交付。bridge 只守两条红线：① 出站分流（assistant/message 内心独白吞掉，不自动发群）；② 交付授权门控（主人未回「交付」前 `matrix_send_room_message` 拒绝，防跳过请示直接发群；owner 未明确在场时 fail-closed）。**群里只见自然的人话 + 最终交付物，绝无「请示/待审/等老板」泄露**
+- **秘书工作台 UI**：入口——**会话头部右上角快捷入口**（`conversation.session.header.utilities`），带待批角标（收件箱待批数）。点击弹出**面板**，含两个 tab——**收件箱**（待批请示/汇报，点批准/交付/拒绝）、**时间线**（自我记忆，筛选/删除/清空）
 - **可靠性**：事件 id 持久去重环、sync token 落盘重启续传、长回复 HTML 失败回退纯文本、sync 循环指数退避、LLM 受限重试熔断（`maxRetriesBeforeAbort`）
 
 ### Matrix 工具
@@ -193,40 +193,21 @@ allowBuilds:
 | `authStoreFile` | `auth-store.json` | 记忆授权库文件名（相对 `stateDir`） |
 | `redlineTools` | `['bash','pwsh','write','edit']` | 红线工具：即使有记忆授权也每次强制房间确认 |
 | `cwdCandidates` | `[进程 cwd]` | 新房间工作目录引导的候选目录列表；首项作为缺省 |
-| `taskQueueMax` | `20` | 单个房间 matrix 任务队列上限，超出后最早 pending 任务自动拒绝 |
 | `matrixTools` | `true` | 是否注册 10 个 Matrix 工具（成员/消息/房间/用户查询、主动发送、媒体下载、自我时间线） |
 | `notifyRoomEvents` | `false` | 是否把入群/离群/资料变更等房间事件注入 agent 会话（供主动打招呼等） |
-| `proactiveSendRequiresApproval` | `true` | 主动消息工具（`matrix_send_dm`/`send_room_message`/`mention_member`）首用是否需 Owner 批准 |
+| `proactiveSendRequiresApproval` | `true` | 主动消息工具（`matrix_send_dm` 等）首用是否需 Owner 批准 |
 | `preserveRichText` | `true` | 是否保留富文本（`formatted_body`）/回复上下文/编辑语义，结构化注入 agent（类人信息完整）；`false` 回退纯文本 |
-| `soul.enabled` | `true` | 是否启用灵魂注入（性格/风格/口头禅/习惯注入 room agent 的 system prompt） |
-| `soul.persona` | `'你叫小灵…'` | 性格/人设描述（自由文本） |
-| `soul.style` | `'friendly'` | 说话风格：`concise`/`friendly`/`formal`/`humorous`/`sassy` |
-| `soul.catchphrase` | `'交给我吧'` | 口头禅（可选） |
-| `soul.habits` | `'先确认需求再动手…'` | 工作习惯（自由文本） |
-| `soul.replyLength` | `'short'` | 回复长度偏好：`short`/`normal`/`detailed` |
 | `testRoomPrefix` | `'【测试】'` | 房间名前缀匹配即视为测试房间，给数字人注入测试声明（「当前是测试环境，请勿真实执行任务/修改文件/向真实用户发送消息」）；空=关闭 |
-| `twinModeRoomPrefix` | `''` | 房间名前缀匹配即启用秘书编排（任务入队/开工请示/交付确认），即使 `digitalTwinMode=false`；用于「只给测试房间开秘书编排」；空=不启用 |
-| `secretaryGroupDefault` | `true` | **群聊默认启用秘书编排**：Matrix 群聊消息（非私聊）默认进任务队列待 owner 审核/请示/确认，无需 `digitalTwinMode` 或前缀；@ 提及自己的即时交流仍直接回复。设为 `false` 关闭群聊默认（此时仅 `digitalTwinMode=true` 或前缀匹配才启用） |
-| `secretaryDmDefault` | `false` | **私聊默认秘书编排**：默认 `false`（私聊保持直接对话）；设为 `true` 时数字分身的私聊消息也进任务队列待 owner 审核。仅对数字分身账号（非主账号）生效 |
-| `roomRoles` | `{}` | 房间 → 灵魂预设 id 的固定角色映射（如 `{ '!room:hs': 'dev' }`）；未配置用百变员工 |
-| `taskClarifyBeforeStart` | `true` | 开工前是否私下 DM 老板请示要求/优先级；超时按原任务开工 |
-| `taskClarifyTimeoutSecs` | `120` | 开工请示等待秒数 |
-| `taskConfirmBeforeDeliver` | `true` | 交付前是否私下 DM 老板结果摘要请求确认 |
-| `taskConfirmTimeoutSecs` | `600` | 交付确认等待秒数 |
-| `taskConfirmTimeoutAction` | `'hold'` | 确认超时行为：`hold`（挂起待确认）/`deliver`（自动交付）/`cancel`（取消） |
-| `taskConfirmExemptMatters` | `[]` | 豁免交付确认的事分类（低风险任务跳过确认） |
+| `twinModeRoomPrefix` | `''` | 房间名前缀匹配即启用秘书编排（开工请示/交付确认），即使 `digitalTwinMode=false`；用于「只给测试房间开秘书编排」；空=不启用 |
+| `secretaryGroupDefault` | `true` | **群聊默认启用秘书编排**：Matrix 群聊消息（非私聊）默认走「请示→交付」闭环，无需 `digitalTwinMode` 或前缀；@ 提及自己的即时交流仍直接回复。设为 `false` 关闭群聊默认 |
+| `secretaryDmDefault` | `false` | **私聊默认秘书编排**：默认 `false`（私聊保持直接对话）；设为 `true` 时数字分身的私聊消息也走请示闭环 |
+| `taskClarifyTimeoutSecs` | `120` | 开工请示（`matrix_request_owner_decision`）阻塞等待主人答复的秒数 |
+| `taskConfirmTimeoutSecs` | `600` | 交付汇报（`matrix_report_owner`）阻塞等待主人答复的秒数 |
 
-**内置灵魂预设**（设置页「选择预设」一键填充，可再微调后保存）：
+**社交记忆配置**：
 
-| 预设 | 适用 |
-|---|---|
-| `dynamic` 百变员工（默认） | 根据房间氛围/语境自动切换人设与语气 |
-| `default` 综合助手 | 通用助手，靠谱有人情味 |
-| `pm` 产品经理 | 关注用户价值与目标拆解，习惯先对齐需求 |
-| `dev` 研发工程师 | 技术扎实、沟通直接，先说根因再给方案 |
-| `qa` 测试工程师 | 细心严谨，问题描述带复现步骤/预期/实际 |
-| `leader` 领导（负责人） | 看全局抓重点，协调资源推动决策 |
-| `newbie` 新入职员工 | 谦虚好学，持续学习完善，不懂就问 |
+| 配置 | 默认 | 说明 |
+|---|---|---|
 | `autoIntroduce` | `true` | 自己入群后是否主动 @ 成员做自我介绍 |
 | `maxSelfIntroMentions` | `20` | 自我介绍 @ 人数上限（超出截断并附「等 N 人」） |
 | `memberMemory` | `true` | 是否记住成员资料（join/profile/消息 upsert，落盘 `member-memory.json`） |
