@@ -8,6 +8,16 @@ importers:
 
   .:
     dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: ^3.18.1
+        version: 3.18.1
+      '@evlon/dsh-channel-core':
+        specifier: file:../dsh-channel-core
+        version: file:../dsh-channel-core
+      '@evlon/dsh-channel-matrix':
+        specifier: file:../dsh-channel-matrix
+        version: file:../dsh-channel-matrix
+    devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.1
         version: 4.0.1
@@ -29,10 +39,6 @@ importers:
       '@deepseek-ai/dsh-user-approval':
         specifier: ^0.1.1-rc.2
         version: 0.1.1-rc.2(09871eaf880be2109e9d668352ef8c05)
-      '@deepseek-ai/schemastery':
-        specifier: ^3.18.1
-        version: 3.18.1
-    devDependencies:
       '@types/node':
         specifier: ^24.0.0
         version: 24.13.3
@@ -324,6 +330,12 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@evlon/dsh-channel-core@file:../dsh-channel-core':
+    resolution: {directory: ../dsh-channel-core, type: directory}
+
+  '@evlon/dsh-channel-matrix@file:../dsh-channel-matrix':
+    resolution: {directory: ../dsh-channel-matrix, type: directory}
+
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
@@ -531,6 +543,12 @@ snapshots:
 
   '@esbuild/win32-x64@0.28.2':
     optional: true
+
+  '@evlon/dsh-channel-core@file:../dsh-channel-core': {}
+
+  '@evlon/dsh-channel-matrix@file:../dsh-channel-matrix':
+    dependencies:
+      '@evlon/dsh-channel-core': file:../dsh-channel-core
 
   '@standard-schema/spec@1.1.0': {}
 

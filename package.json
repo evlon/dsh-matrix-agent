@@ -37,7 +37,9 @@
     }
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.1"
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@evlon/dsh-channel-core": "file:../dsh-channel-core",
+    "@evlon/dsh-channel-matrix": "file:../dsh-channel-matrix"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
