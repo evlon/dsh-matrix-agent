@@ -6,24 +6,21 @@ DeepSeek Harness（dsh）的 Matrix agent 桥接插件：把 Matrix 房间桥接
 
 ```
 src/
-├── index.ts      # 插件入口（name/inject/apply/Config），无 default export
-├── bridge.ts     # 桥接层：多账号编排（AccountBridge）、入站路由（@提及/私聊）、审批、授权、媒体注入、社交记忆、任务快照/时间线发布、秘书编排（开工请示/交付确认）
-├── matrix.ts     # 通道层：零依赖 Matrix client-server API 客户端（fetch + /sync 长轮询、媒体下载）
-├── chatlog.ts    # 房间聊天记录（每房近一周/上限 2000 条，stateDir/chatlog/*.jsonl，编辑去重替换，回复引用上下文）
-├── tools.ts      # 10 个工具（成员/消息/房间/用户/媒体/时间线查询、主动发送），经 ctx.tools.register 注册
-├── config.ts     # Schemastery 配置 schema（含 digitalTwins、灵魂 soul、社交记忆、时间线、测试环境识别/秘书编排开关）
-├── soul.ts       # 数字分身灵魂：灵魂 prompt 渲染、行为统计、twin_soul_status 工具、owner 推导纯函数
-├── settings.ts   # dsh-matrix 统一 settings namespace（账号/灵魂/社交 + 任务/时间线快照镜像、live watch）
-├── timeline.ts   # 自我时间线：跨房间记录分身出站动作（仅元数据，不落盘原文）
-├── diag.ts       # 诊断日志：双写 stateDir/diagnostics.log + ~/.dsh/dsh-matrix-diag.log
-├── member-store.ts # 成员记忆库（记住每个房间见过的成员，含其他数字人）
-├── store.ts      # 文件落盘状态：房间↔会话映射、事件去重环、sync token
-├── auth-store.ts # 记忆授权库：分身↔Owner、工具授权、红线判定
-├── client-main.js # 浏览器端源码（esbuild 打包为 __ModuleLoader__ bundle）：设置页（单入口+标签页，含时间线 tab）、会话任务 tab、秘书工作台面板
-└── format.ts     # 保守 markdown 子集 → Matrix HTML，收敛前缀长回复分段，媒体占位描述
+├── index.ts       # 插件入口（name/inject/apply/Config），无 default export
+├── matrix.ts      # 兼容 shim：转发 @evlon/dsh-channel-matrix / @evlon/dsh-channel-core
+├── tools.ts       # 兼容 shim：转发 @evlon/dsh-tools-channel
+└── client-main.js # 浏览器端源码（esbuild 打包为 __ModuleLoader__ bundle）：设置页（单入口+标签页，含时间线 tab）、会话任务 tab、秘书工作台面板
 
 test-system/     # 独立测试系统（真实 homeserver + AI 同事 + 断言引擎 + Web 实时界面，见下「测试系统」）
 ```
+
+> **组合包**：本包是「纯组合包」——桥接层（bridge/config/format/settings/store/auth-store/
+> member-store/chatlog/timeline/diag）已拆到独立仓库 [`@evlon/dsh-bridge`](https://github.com/evlon/dsh-bridge)；
+> 通道实现 [`@evlon/dsh-channel-matrix`](https://github.com/evlon/dsh-channel-matrix)、通道抽象
+> [`@evlon/dsh-channel-core`](https://github.com/evlon/dsh-channel-core)、原子工具
+> [`@evlon/dsh-tools-channel`](https://github.com/evlon/dsh-tools-channel) 也各自独立。
+> 本包只负责「组装」：把 bridge 挂进 cordis 组合、提供 cordis.patch.yml、以及 client 半的设置 UI。
+> 岗位人设与秘书工作流由岗位 preset（`@evlon/dsh-job-presets`）+ 岗位 skill（`@evlon/dsh-job-skills`）承载。
 
 ## 架构
 
@@ -59,11 +56,13 @@ test-system/     # 独立测试系统（真实 homeserver + AI 同事 + 断言�
 │                          dsh-matrix 插件（每个进程各跑一份）                      │
 │                                                                              │
 │  ┌────────────────┐  ┌────────────────┐  ┌────────────────────────────────┐  │
-│  │ 通道层 matrix.ts │  │ 桥接层 bridge.ts │  │ 授权库 auth-store.ts            │  │
-│  │ · /sync 长轮询   │  │ · 消息路由        │  │ · 记忆授权（L1 静默放行）         │  │
-│  │ · send/typing  │  │   @提及/私聊/兜底 │  │ · Owner 房间确认（L2）            │  │
-│  │ · 邀请自动加入    │  │ · 合并窗口 .. !!  │  │ · 红线强制确认（L3，每次）        │  │
-│  │                │  │ · per-room agent │  │ · auth-store.json 落盘          │  │
+│  │ 通道层            │  │ 桥接层            │  │ 授权库                          │  │
+│  │ @evlon/          │  │ @evlon/          │  │ @evlon/dsh-bridge              │  │
+│  │ dsh-channel-matrix│ │ dsh-bridge        │  │ · 记忆授权（L1 静默放行）         │  │
+│  │ · /sync 长轮询   │  │ · 消息路由        │  │ · Owner 房间确认（L2）            │  │
+│  │ · send/typing  │  │   @提及/私聊/兜底 │  │ · 红线强制确认（L3，每次）        │  │
+│  │ · 邀请自动加入    │  │ · 合并窗口 .. !!  │  │ · auth-store.json 落盘          │  │
+│  │                │  │ · per-room agent │  │                                │  │
 │  └────────────────┘  └────────────────┘  └────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -117,10 +116,10 @@ test-system/     # 独立测试系统（真实 homeserver + AI 同事 + 断言�
 - **命令**：`/help` `/status` `/new` `/clear` `/bind <session-id>` `/auth list` `/auth revoke <tool>` `/auth revoke-all` `/memory` `/forget <userId>`
 - **数字分身灵魂**：`soul.*` 配置（性格/风格/口头禅/习惯）经 `agentSetup` 注入每个 room agent 的 system prompt（section `twin:soul`，仅 Matrix 会话生效，不污染 GUI）；行为统计（回复数/工具调用/活跃时间）按 `matrix-` 前缀 session 聚合，分身可调用 `twin_soul_status` 工具读取自身人设与统计
 - **社交记忆**：分身被邀请入群后按 `selfIntroTemplate` 主动 @ 成员自我介绍（上限 `maxSelfIntroMentions`）；`memberMemory` 开启时记住每个房间里见过的成员（含其他数字人），`/memory` 查看、`/forget <userId>` 忘记；`autoGreet` 开启时新成员入群会提示 agent 主动打招呼了解对方
-- **DSH Web 设置界面（单入口 + 标签页）**：Client 半注册一个「数字分身」设置页（`settings.section` `dsh-matrix`），内部四个标签页——**灵魂**（预设/性格/风格/口头禅/习惯 + 行为模式）、**Matrix 账号**（连接/模型路由/白名单）、**社交**（自我介绍/成员记忆/打招呼/测试房间前缀）、**时间线**（自我记忆查看/筛选/删除/清空）。配置统一持久化到 `dsh-matrix` settings namespace（连接类字段需重启生效）。可选项尽量用下拉：`provider`/`model` 来自 dsh 运行时目录（`llm.providers`/`llm.models`），`agentPreset` 来自 `agentPresets.list`；**Owner 提供默认值提示**——分身账号为 `@ai-xxxxxx` 时提示默认主人 `@xxxxxx`（仅配置页辅助，运行期不推导，显式配置优先）
+- **DSH Web 设置界面（单入口 + 标签页）**：Client 半注册一个「数字分身」设置页（`settings.section` `dsh-matrix`），内部三个标签页——**Matrix 账号**（连接/模型路由/白名单）、**社交**（自我介绍/成员记忆/打招呼/测试房间前缀）、**时间线**（自我记忆查看/筛选/删除/清空）。配置统一持久化到 `dsh-matrix` settings namespace（连接类字段需重启生效）。可选项尽量用下拉：`provider`/`model` 来自 dsh 运行时目录（`llm.providers`/`llm.models`），`agentPreset` 来自 `agentPresets.list`；**Owner 提供默认值提示**——分身账号为 `@ai-xxxxxx` 时提示默认主人 `@xxxxxx`（仅配置页辅助，运行期不推导，显式配置优先）。**岗位人设与秘书工作流不再在此注入**——由岗位 preset（`agentPreset` 指向 `@evlon/dsh-job-presets` 的 pm/dev/qa/leader/newbie）承载
 - **任务视图（会话「任务」tab + 全局「所有任务」）**：点击 Matrix 会话后，在「对话 / 轨迹 / 树状视图」后新增「任务」tab，展示该房间任务列表与状态（待审/已批/执行中/完成/拒绝），支持「批准/拒绝」按钮（复用 `/approve N` `/reject N` 命令语义）；会话头部「所有任务」按钮弹出全局面板，聚合**所有会话**的任务、按状态筛选、点击跳转对应会话。数据源为 Host 把各房间任务队列写入 `dsh-matrix` settings 的 **`tasksSnapshot` 运行时镜像**（非用户配置；任务变更防抖 300ms 更新）
 - **自我时间线（跨房间记忆，防脑裂）**：记录分身自己的出站动作——回复、工具调用、主动消息、自我介绍、审批、任务推送——到 `twin-timeline.jsonl`（**仅结构化元数据：kind/roomId/时间/工具名/长度/主体，不落盘任何聊天原文**，守住「聊天内容不落盘」红线）。**按主体分层**：`actor: secretary`（秘书的请示/确认/交付调度）vs `worker`（干活会话的执行回复/工具），`twin_timeline` 工具与时间线 UI 均可按主体筛选。**逐级暴露**：① 常驻 system prompt 段 `twin:memory`（恒定提示词，字节永不变化，不影响 KV 缓存命中率，仅告知"你有自我记忆可查"）；② 分身用 `twin_timeline` 工具查行动摘要；③ 细节用 `matrix_get_recent_messages` 现查对应房间。设置页「数字分身 → 时间线」tab 可查看/筛选（类型/主体/房间）/**删除单条/清空全部**（经 settings `timelineOps` 命令字段，Host 处理后清零）。配置：`timelineEnabled`（记录开关）、`timelineInject`（常驻提示词段开关）、`timelineCrossRoom`（跨房间共享门控，默认隔离）、`timelineCap`（内存上限）
-- **秘书编排（角色化会话 + 开工请示 + 交付确认）**：每个干活会话 = 一个角色化分身（`roomRoles` 房间→角色映射，如 `{ '!room:hs': 'dev' }`；未配置用百变员工；领导拉群跨岗时任务级 `role` 覆盖）。任务流转对齐真实工作场景：**开工前**私下 DM 老板（`matrix_send_dm`）请示要求/优先级（`taskClarifyBeforeStart`，超时按原任务开工）→ 执行（角色 persona + 老板开工指示注入干活会话）→ **交付前**私下 DM 老板结果摘要请求确认（`taskConfirmBeforeDeliver`，老板回「交付」则交付回原房间、回意见则修订、超时按 `taskConfirmTimeoutAction` hold/deliver/cancel）→ 对外交付。**多轮确认**：老板可多次给指示/意见（任务保持 clarifying/confirming，直到「批准开工」/「确认交付」才流转）。老板在私聊房的回复经 `ownerDmRoomId` 路由到对应任务（不污染任务队列）。任务状态含 `clarifying`(🤔请示中)/`confirming`(🔐待确认)。配置：`roomRoles`、`taskClarifyBeforeStart`、`taskClarifyTimeoutSecs`、`taskConfirmBeforeDeliver`、`taskConfirmTimeoutSecs`、`taskConfirmTimeoutAction`、`taskConfirmExemptMatters`
+- **秘书编排（彻底分层）**：数字员工（有 owner）收到群任务时，agent 按岗位 skill 用原子工具自行完成「请示→读数据→整理→私发→等交付→发群」闭环：`matrix_request_owner_decision` 私下请示主人开工 → `matrix_set_room_cwd`/`matrix_list_workspace_files`/`matrix_read_workspace_file` 读真实数据整理 → `matrix_report_owner` 私下汇报完整结果等主人「交付」 → `matrix_send_room_message` 发群交付。bridge 只守两条红线：① 出站分流（assistant/message 内心独白吞掉，不自动发群）；② 交付授权门控（主人未回「交付」前 `matrix_send_room_message` 拒绝，防跳过请示直接发群）。**群里只见自然的人话 + 最终交付物，绝无「请示/待审/等老板」泄露**
 - **秘书工作台 UI（大尺寸面板，合理利用桌面可视区）**：入口——**会话头部右上角快捷入口**（`conversation.session.header.utilities`）。点击弹出**大尺寸面板**（占可视区 ~68% 宽、全高、右滑 + 遮罩），**两栏布局（中间分隔条可拖拽调宽度，28%–72%）**：左栏任务列表（按流转分组：待审/🤔请示中/执行中/🔐待确认/完成/已拒绝，每行状态/角色/房间/工作目录状态）、右栏选中任务详情（完整文本/角色/房间/发起人/工作目录/老板指示与意见历史/操作按钮）。**任务 tab**：老板直接「批准开工/给指示/确认交付/给意见/批准/拒绝」+ **设工作目录**（未设目录任务输入路径绑定 cwd，等价于拖到工作区）；**时间线 tab**：自我记忆（主体秘书/干活筛选、删除/清空）。操作经 settings `secretaryOps` 命令字段（含 `set-cwd`），Host 处理后清零。私聊回复仍保留为备选（状态机幂等）。会话头部「所有任务」按钮已移除，由工作台统一
 - **可靠性**：事件 id 持久去重环、sync token 落盘重启续传、长回复 HTML 失败回退纯文本、sync 循环指数退避、LLM 受限重试熔断（`maxRetriesBeforeAbort`）
 
