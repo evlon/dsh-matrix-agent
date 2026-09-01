@@ -6,9 +6,12 @@
  *
  * 单入口：设置侧栏只注册一个「数字分身」入口（settings.section 'dsh-matrix'），
  * 内部用标签页分三个面板：
- * - 灵魂：预设/性格/风格/口头禅/习惯 + 行为模式
  * - Matrix 账号：连接信息 / 模型路由 / 白名单等
  * - 社交：自我介绍 / 成员记忆 / 主动打招呼
+ * - 时间线：自我记忆查看/筛选/删除/清空
+ *
+ * 岗位人设与秘书工作流由岗位 preset（agent.cordis.yml 的 persona 行）承载，
+ * 不再在此注入（灵魂子系统已彻底移除）。
  *
  * 会话视图：在「对话/轨迹/树状视图」后新增「任务」tab；会话头部新增
  * 「所有任务」入口 + 全局面板。
@@ -55,7 +58,6 @@ function sectionOf(scope) {
 
 /**
  * 从分身账号推导默认 Owner（仅配置页提示用，运行期不推导）。
- * 与 src/soul.ts 的 deriveDefaultOwner 保持一致。
  * '@ai-niukunliang:domain' → '@niukunliang:domain'。
  */
 function deriveDefaultOwner(userId) {
@@ -225,161 +227,6 @@ function modelOptionsFor(groups, provider, currentModel) {
   return list
 }
 
-/** 内置灵魂预设。 */
-const SOUL_PRESETS = [
-  {
-    id: 'dynamic', label: '百变员工（默认·自动适配）',
-    persona: '你是「百变员工」：会根据所在房间的名称、讨论氛围与收到的消息，自动选择最合适的人设与语气（比如在技术群里像靠谱的研发、在需求讨论里像产品经理、面对新同事像乐于帮助的前辈）。你不需要固定一种性格。',
-    style: '', catchphrase: '',
-    habits: '先理解当前对话的语境与对象，再选择合适的人设与语气；如果切换了人设，主动用一句话告知对方你现在以什么角色出现，并提示可以在「数字分身」设置页修改灵魂。', replyLength: 'normal',
-  },
-  {
-    id: 'default', label: '默认（综合助手）',
-    persona: '你叫小灵，是团队里靠谱又有人情味的数字同事。',
-    style: 'friendly', catchphrase: '交给我吧',
-    habits: '先确认需求再动手，做完主动同步结论。', replyLength: 'short',
-  },
-  {
-    id: 'pm', label: '产品经理',
-    persona: '你是团队的产品经理分身。你关注用户价值与目标拆解，习惯先澄清需求背景再推进。',
-    style: 'formal', catchphrase: '我们先对齐一下目标',
-    habits: '先对齐需求目标与验收标准，再安排执行；产出结论时给出下一步行动项。', replyLength: 'normal',
-  },
-  {
-    id: 'dev', label: '研发工程师',
-    persona: '你是团队的后端/全栈研发分身。你技术扎实、注重代码质量与可维护性，沟通直接。',
-    style: 'concise', catchphrase: '这个我来搞定',
-    habits: '先看代码与文档再动手；遇到问题先说根因再给方案；完成后附关键变更说明。', replyLength: 'short',
-  },
-  {
-    id: 'qa', label: '测试工程师',
-    persona: '你是团队的测试工程师分身。你细心严谨、关注边界与回归风险，善于把问题描述清楚。',
-    style: 'friendly', catchphrase: '这个我帮你验证一下',
-    habits: '先复现再报问题，问题描述带复现步骤/预期/实际；关注回归影响面。', replyLength: 'normal',
-  },
-  {
-    id: 'leader', label: '领导（负责人）',
-    persona: '你是团队的负责人分身。你看全局、抓重点，沟通有分寸，善于协调资源与推动决策。',
-    style: 'formal', catchphrase: '这件事我来协调',
-    habits: '先听结论再问细节；给出方向与优先级；重要事项主动同步进度。', replyLength: 'normal',
-  },
-  {
-    id: 'newbie', label: '新入职员工',
-    persona: '你是刚入职的团队成员。你谦虚好学、乐于请教，正在持续学习团队的业务与流程。',
-    style: 'friendly', catchphrase: '这个我还在学习中，麻烦多指教',
-    habits: '不懂就问、先查资料再提问；做事主动同步进度；每次任务后总结学到的东西并完善自己的认知。', replyLength: 'normal',
-  },
-]
-
-/** 根据当前 form 的灵魂字段，反推匹配的预设 id（完全一致才匹配；否则自定义）。 */
-function presetIdForForm(form) {
-  const soulKeys = ['persona', 'style', 'catchphrase', 'habits', 'replyLength']
-  for (const preset of SOUL_PRESETS) {
-    let match = true
-    for (const k of soulKeys) {
-      if ((form[k] ?? '') !== (preset[k] ?? '')) { match = false; break }
-    }
-    if (match) return preset.id
-  }
-  return 'custom'
-}
-
-/** 灵魂标签页。 */
-function SoulTab(props) {
-  const { scope, form, set, save, saved, reset } = props
-  const currentPreset = presetIdForForm(form)
-
-  const applyPreset = (id) => {
-    // "custom" 表示不套用任何预设（保持当前值）。
-    if (id === 'custom') return
-    const preset = SOUL_PRESETS.find((p) => p.id === id)
-    if (preset === undefined) return
-    setFormFromPreset(set, preset)
-  }
-
-  return React.createElement('div', null,
-    React.createElement(SelectField, {
-      label: '选择预设（一键填充，可再微调）',
-      value: currentPreset,
-      onChange: (v) => applyPreset(v),
-      options: [
-        { value: 'custom', label: '— 自定义 —' },
-      ].concat(SOUL_PRESETS.map((p) => ({ value: p.id, label: p.label }))),
-    }),
-    React.createElement(SwitchField, { label: '启用灵魂', value: form.enabled, onChange: set('enabled') }),
-    React.createElement(TextField, { label: '性格 / 人设', value: form.persona, onChange: set('persona'), textarea: true }),
-    React.createElement(SelectField, {
-      label: '说话风格', value: form.style, onChange: set('style'),
-      options: [
-        { value: 'concise', label: '简洁干练' },
-        { value: 'friendly', label: '亲切友好' },
-        { value: 'formal', label: '正式专业' },
-        { value: 'humorous', label: '幽默风趣' },
-        { value: 'sassy', label: '毒舌犀利' },
-      ],
-    }),
-    React.createElement(SelectField, {
-      label: '回复长度', value: form.replyLength, onChange: set('replyLength'),
-      options: [
-        { value: 'short', label: '简短（一两句）' },
-        { value: 'normal', label: '适中（一段）' },
-        { value: 'detailed', label: '详细（多段）' },
-      ],
-    }),
-    React.createElement(TextField, { label: '口头禅', value: form.catchphrase, onChange: set('catchphrase') }),
-    React.createElement(TextField, { label: '工作习惯', value: form.habits, onChange: set('habits'), textarea: true }),
-    React.createElement(SaveBar, { onSave: save, saved, onReset: () => reset('soul') }))
-}
-
-function setFormFromPreset(set, preset) {
-  set('persona')(preset.persona)
-  set('style')(preset.style)
-  set('catchphrase')(preset.catchphrase)
-  set('habits')(preset.habits)
-  set('replyLength')(preset.replyLength)
-}
-
-/** 行为模式摘要（灵魂 tab 底部）。 */
-function BehaviorSummary(props) {
-  const { conn } = props
-  const [stats, setStats] = React.useState(undefined)
-
-  React.useEffect(() => {
-    if (conn === undefined || conn.api === undefined) return undefined
-    let alive = true
-    // session.list 响应：{ result: { ok, value: { items } } }。
-    conn.api.sessions.list({}).then((res) => {
-      if (!alive || res.result?.ok !== true) return
-      const sessions = Array.isArray(res.result?.value?.items)
-        ? res.result.value.items.filter((s) => typeof s.id === 'string' && s.id.startsWith('matrix-'))
-        : []
-      setStats({
-        rooms: sessions.map((s) => ({ sessionId: s.id, title: s.title ?? '' })),
-        count: sessions.length,
-      })
-    }).catch(() => {})
-    return () => { alive = false }
-  }, [conn])
-
-  return React.createElement('div', null,
-    React.createElement('hr', { style: { margin: '16px 0', borderColor: 'var(--dsw-alias-border-l1)' } }),
-    React.createElement('h4', { style: { margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' } }, '行为模式'),
-    stats === undefined
-      ? React.createElement('p', { style: HINT_STYLE }, '加载中…')
-      : React.createElement('div', null,
-          React.createElement('p', { style: { fontSize: '13px', margin: '4px 0', color: 'var(--dsw-alias-label-primary)' } },
-            '活跃的 Matrix 会话：' + stats.count + ' 个'),
-          stats.rooms.length === 0
-            ? React.createElement('p', { style: HINT_STYLE },
-                '暂无 Matrix 房间会话（分身还没被拉进任何群，或尚未对话）。')
-            : React.createElement('ul', { style: { fontSize: '13px', paddingLeft: '18px', margin: '4px 0', color: 'var(--dsw-alias-label-primary)' } },
-                stats.rooms.map((room) =>
-                  React.createElement('li', { key: room.sessionId },
-                    (room.title !== '' ? room.title : room.sessionId) + '（' + room.sessionId + '）'))),
-          React.createElement('p', { style: HINT_STYLE },
-            '更详细的回复数 / Top 工具统计可在对话中让分身调用 twin_soul_status 工具查看。')))
-}
-
 /** Matrix 账号标签页。 */
 function AccountTab(props) {
   const { form, set, save, saved, reset, providers, modelGroups, presets, conn } = props
@@ -457,15 +304,6 @@ function SocialTab(props) {
 
 /** 设置页显示默认值：settings 未就绪/加载失败时也展示合理默认（与 config.ts 默认一致）。 */
 const FORM_DEFAULTS = {
-  // 灵魂（默认百变员工）。
-  soul: {
-    enabled: true,
-    persona: '你是「百变员工」：会根据所在房间的名称、讨论氛围与收到的消息，自动选择最合适的人设与语气（比如在技术群里像靠谱的研发、在需求讨论里像产品经理、面对新同事像乐于帮助的前辈）。你不需要固定一种性格。',
-    style: '',
-    catchphrase: '',
-    habits: '先理解当前对话的语境与对象，再选择合适的人设与语气；如果切换了人设，主动用一句话告知对方你现在以什么角色出现，并提示可以在「数字分身」设置页修改灵魂。',
-    replyLength: 'normal',
-  },
   // Matrix 账号。
   homeserverUrl: '',
   userId: '',
@@ -494,42 +332,24 @@ const FORM_DEFAULTS = {
   secretaryDmDefault: false,
 }
 
-/** 把 settings 的 soul 子对象展开到顶层 form（form.persona/style/... 直接可读写），
- *  其余顶层字段直取；settings 未就绪时用显示默认值。 */
+/** 把 settings 用户层字段合并进顶层 form；settings 未就绪时用显示默认值。 */
 function mergeFormSection(section) {
-  const base = Object.assign({}, FORM_DEFAULTS, FORM_DEFAULTS.soul)
+  const base = Object.assign({}, FORM_DEFAULTS)
   if (section === undefined) return base
   for (const [k, v] of Object.entries(section)) {
     if (v === undefined || v === null) continue
-    if (k === 'soul' && typeof v === 'object') {
-      // soul 子字段展开到顶层。
-      for (const [sk, sv] of Object.entries(v)) {
-        if (sv !== undefined && sv !== null) base[sk] = sv
-      }
-    } else {
-      base[k] = v
-    }
+    base[k] = v
   }
   return base
 }
 
-/** 保存时把顶层 soul 字段收拢回 form.soul，再整体写 settings。 */
+/** 保存时把 form 收拢后整体写 settings。 */
 function collectFormForSave(form) {
-  const soul = {
-    enabled: form.enabled,
-    persona: form.persona,
-    style: form.style,
-    catchphrase: form.catchphrase,
-    habits: form.habits,
-    replyLength: form.replyLength,
-  }
   const rest = {}
   for (const [k, v] of Object.entries(form)) {
-    if (k === 'soul') continue
-    if (['enabled', 'persona', 'style', 'catchphrase', 'habits', 'replyLength'].includes(k)) continue
     rest[k] = v
   }
-  return Object.assign({ soul }, rest)
+  return rest
 }
 
 /** 主设置页：单入口 + 内部标签页。 */
@@ -563,7 +383,6 @@ function MatrixSettingsPage(props) {
 
   // 各 tab 的字段清单（用于「重置为默认」）。
   const TAB_FIELDS = {
-    soul: ['soul'], // 灵魂为嵌套对象，重置时 unset 整个 soul。
     account: ['homeserverUrl', 'userId', 'accessToken', 'instanceKey', 'owner', 'respondToAll', 'allowAllUsers', 'allowedUserIds', 'provider', 'model', 'agentPreset', 'chunkMaxChars', 'proactiveSendRequiresApproval', 'preserveRichText'],
     social: ['autoIntroduce', 'maxSelfIntroMentions', 'memberMemory', 'autoGreet', 'selfIntroTemplate', 'testRoomPrefix', 'secretaryGroupDefault', 'secretaryDmDefault'],
   }
@@ -579,16 +398,7 @@ function MatrixSettingsPage(props) {
     const def = mergeFormSection(undefined)
     setForm((prev) => {
       const next = Object.assign({}, prev)
-      if (tabId === 'soul') {
-        next.enabled = def.enabled
-        next.persona = def.persona
-        next.style = def.style
-        next.catchphrase = def.catchphrase
-        next.habits = def.habits
-        next.replyLength = def.replyLength
-      } else {
-        fields.forEach((f) => { next[f] = def[f] })
-      }
+      fields.forEach((f) => { next[f] = def[f] })
       return next
     })
     setSaved(false)
