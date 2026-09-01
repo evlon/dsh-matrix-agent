@@ -17,6 +17,9 @@ importers:
       '@evlon/dsh-channel-matrix':
         specifier: file:../dsh-channel-matrix
         version: file:../dsh-channel-matrix
+      '@evlon/dsh-tools-channel':
+        specifier: file:../dsh-tools-channel
+        version: file:../dsh-tools-channel(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-llm@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-attachment@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-brand@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)))(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)))(@deepseek-ai/dsh-brand@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)))(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1))(@deepseek-ai/dsh-timeout@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1))))(@deepseek-ai/dsh-tools@0.1.1-rc.2(119bc70f73f8eddebfaa6b47561adeb3))
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.1
@@ -336,6 +339,13 @@ packages:
   '@evlon/dsh-channel-matrix@file:../dsh-channel-matrix':
     resolution: {directory: ../dsh-channel-matrix, type: directory}
 
+  '@evlon/dsh-tools-channel@file:../dsh-tools-channel':
+    resolution: {directory: ../dsh-tools-channel, type: directory}
+    peerDependencies:
+      '@deepseek-ai/cordis': ^4.0.1
+      '@deepseek-ai/dsh-llm': ^0.1.1-rc.2
+      '@deepseek-ai/dsh-tools': ^0.1.1-rc.2
+
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
@@ -548,6 +558,13 @@ snapshots:
 
   '@evlon/dsh-channel-matrix@file:../dsh-channel-matrix':
     dependencies:
+      '@evlon/dsh-channel-core': file:../dsh-channel-core
+
+  '@evlon/dsh-tools-channel@file:../dsh-tools-channel(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-llm@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-attachment@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-brand@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)))(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)))(@deepseek-ai/dsh-brand@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)))(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1))(@deepseek-ai/dsh-timeout@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1))))(@deepseek-ai/dsh-tools@0.1.1-rc.2(119bc70f73f8eddebfaa6b47561adeb3))':
+    dependencies:
+      '@deepseek-ai/cordis': 4.0.1
+      '@deepseek-ai/dsh-llm': 0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-attachment@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-brand@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)))(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)))(@deepseek-ai/dsh-brand@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)))(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1))(@deepseek-ai/dsh-timeout@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)))
+      '@deepseek-ai/dsh-tools': 0.1.1-rc.2(119bc70f73f8eddebfaa6b47561adeb3)
       '@evlon/dsh-channel-core': file:../dsh-channel-core
 
   '@standard-schema/spec@1.1.0': {}
