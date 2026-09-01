@@ -27,9 +27,9 @@
         allowAllUsers: true
         provider: 'codebuddy'
         model: 'deepseek-v4-flash'
-        # room agent 挂载的 agent preset：standard 提供完整工具（bash/pwsh/fs/…）。
-        # 缺失会导致 agent 无任何工具，模型只能把工具调用写成文本（无法真正执行）。
-        agentPreset: 'standard'
+        # room agent 挂载的岗位 preset：pm = 产品经理数字员工（见 @evlon/dsh-job-presets）。
+        # 岗位 preset 提供 persona（人设+秘书工作流）+ skill 加载能力；通道工具由 host 全局注册。
+        agentPreset: 'pm'
         chunkMaxChars: 4000
         mergeTimeoutSecs: 5
         approvalTimeoutSecs: 300

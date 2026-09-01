@@ -292,10 +292,14 @@ export function registerMatrixSettings(
         // Client→Host 秘书操作命令（非用户配置）：Host 处理后清零。
         secretaryOps: z.any().default(undefined),
       }), { applies: 'live', base: pickMatrixBase(config) })
-      const applyUser = (user: unknown): void => {
+      const applyUser = (user: unknown, notify = true): void => {
         current = mergeMatrixConfig(config, (user ?? {}) as Record<string, unknown>)
         // 配置变化通知（供 index.ts 驱动 bridge 启停：token 缺失时保持插件存活，配置好后自动恢复）。
-        if (onConfigChange !== undefined) onConfigChange(current)
+        // 首次同步 merge（register 内的 scope.get()）不通知：index.ts 拿到 merged 后会自行做
+        // 初始启停判定；且此刻 index.ts 的 settingsHandle 仍处 TDZ（const 尚未赋值），
+        // 提前通知会抛 "Cannot access 'settingsHandle' before initialization"，导致
+        // snapshotScope 与 watch 注册被跳过、快照机制整体失效。后续 watch 变更才通知。
+        if (notify && onConfigChange !== undefined) onConfigChange(current)
         // 检测时间线管理命令（Client→Host）。
         const ops = (user as Record<string, unknown> | undefined)?.timelineOps as TimelineOps | undefined
         if (ops !== undefined && onTimelineOps !== undefined) {
@@ -308,9 +312,9 @@ export function registerMatrixSettings(
           onSecretaryOps(sops)
         }
       }
-      applyUser(scope.get())
+      applyUser(scope.get(), false)
       snapshotScope = scope
-      const unsub = scope.watch((next) => applyUser(next))
+      const unsub = scope.watch((next) => applyUser(next, true))
       disposers.push(unsub)
       fileLog(config.stateDir, `settings register OK: ns=${MATRIX_NS} snapshotScope set`)
     } catch (error) {

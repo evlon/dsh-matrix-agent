@@ -1151,6 +1151,30 @@ export class AccountBridge {
   }
 
   /**
+   * 唤醒某工作房间的 agent 会话继续执行（用于主人批准/交付后的闭环）。
+   * 以系统来源注入一条 user 消息，触发新的 turn；无绑定会话时静默忽略。
+   * 与 deliverRoomEvent 同构，但语义上专用于「主人放行」类异步回环。
+   */
+  private async nudgeRoomAgent(roomId: string, text: string): Promise<void> {
+    try {
+      const handle = this.roomAgents.get(roomId)
+      if (handle === undefined) {
+        this.diag.log(`nudgeRoomAgent room=${roomId} no bound agent; skip`)
+        return
+      }
+      const label = await this.roomContextLabel(roomId)
+      const body = `${label}\n${text}`
+      handle.agent.followup(createUserMessage({
+        content: [{ type: 'text', text: body }],
+        source: { kind: 'user', sender: `@system:${this.userId}` },
+      }))
+      this.diag.log(`nudgeRoomAgent room=${roomId} injected delivery-approved prompt`)
+    } catch (error) {
+      this.ctx.logger.warn('[dsh-matrix-agent] nudgeRoomAgent room=%s failed: %s', roomId, messageOf(error))
+    }
+  }
+
+  /**
    * 把入站媒体归一为 agent 可读文本：尝试下载 mxc 媒体到本地并附上路径，
    * 让 agent 能真正处理图片/文件；下载失败则退化为占位文本。
    * 图片额外通过 ctx.attachments 持久化为多模态引用（imageRefs），供 deliver 附加为
@@ -1546,12 +1570,16 @@ export class AccountBridge {
       await this.safeSend(dmRoomId, `⚠️ 目录不存在或不是绝对路径：${candidate}，请重新指定。`, undefined)
       return
     }
-    // 批准/交付词 → 置位交付授权。
+    // 批准/交付词 → 置位交付授权，并唤醒工作房间的 agent 继续交付。
     const approveWords = /^(批准|交付|开工|开始|ok|可以|yes|go|确认|通过|approve)$/i
     if (approveWords.test(trimmed)) {
       this.deliveryAuthorized.add(workRoomId)
       this.ctx.logger.info('[dsh-matrix-agent] owner authorized delivery for room=%s (dm=%s)', workRoomId, dmRoomId)
       await this.safeSend(dmRoomId, '✅ 已确认，可以交付。', undefined)
+      // 主人已放行，但 agent 此前的 turn 在 matrix_report_owner 后就结束了（工具结果等待
+      // 主人答复、turn 已收尾）。这里把「主人已确认交付」作为一条系统消息注入工作房间会话，
+      // 让 agent 继续执行 matrix_send_room_message 把成果发群，闭环交付。若无绑定会话则忽略。
+      await this.nudgeRoomAgent(workRoomId, '主人已回复「交付」，确认可以发群。请现在把已整理好的最终结果用 matrix_send_room_message 发送到群里完成交付。')
       return
     }
     // 拒绝词 → 撤销授权。
