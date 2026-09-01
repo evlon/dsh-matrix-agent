@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { chunkText, markdownToHtml, escapeHtml, isProviderFailure, formatProviderFailure } from '../lib/format.js'
+import { chunkText, markdownToHtml, escapeHtml, isProviderFailure, formatProviderFailure } from '@evlon/dsh-bridge'
 
 test('markdownToHtml escapes HTML and converts the conservative subset', () => {
   const html = markdownToHtml('**粗体** 与 `code` 和 <script>alert(1)</script>')

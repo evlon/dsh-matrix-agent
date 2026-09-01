@@ -20,21 +20,17 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { MatrixBridge } from './bridge.js'
-import type { Config as MatrixConfig, DigitalTwinAccount } from './config.js'
-import { resolveStateDir } from './config.js'
-import { registerMatrixSettings } from './settings.js'
-import type { TimelineOps, SecretaryOps } from './settings.js'
+import { MatrixBridge } from '@evlon/dsh-bridge'
+import type { Config as MatrixConfig, DigitalTwinAccount } from '@evlon/dsh-bridge'
+import { resolveStateDir } from '@evlon/dsh-bridge'
+import { registerMatrixSettings } from '@evlon/dsh-bridge'
+import type { TimelineOps, SecretaryOps } from '@evlon/dsh-bridge'
 
-export * from './auth-store.js'
-export * from './bridge.js'
-export * from './config.js'
-export * from './format.js'
+// 向后兼容 re-export：把 @evlon/dsh-bridge 的桥接层/支撑类型面转发出去，
+// 保持 dsh-matrix-agent 旧 import 路径（如 `dsh-matrix-agent/bridge`）不破坏。
+export * from '@evlon/dsh-bridge'
+// 通道层与工具向后兼容 shim：仍从本地 matrix.ts/tools.ts 转发到 @evlon 通道包。
 export * from './matrix.js'
-export * from './member-store.js'
-export * from './settings.js'
-export * from './store.js'
-export * from './timeline.js'
 export * from './tools.js'
 
 export const name = 'matrix-agent'

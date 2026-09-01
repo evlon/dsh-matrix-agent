@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { formatToolCall, describeMedia, formatToolResult, formatTurnEnd, formatRetry, formatRetryCircuitTripped, wantsProcess } from '../lib/format.js'
+import { formatToolCall, describeMedia, formatToolResult, formatTurnEnd, formatRetry, formatRetryCircuitTripped, wantsProcess } from '@evlon/dsh-bridge'
 
 test('formatToolCall projects name with no args', () => {
   assert.equal(formatToolCall({ name: 'bash', arguments: '{}' }), '🔧 调用工具 `bash`')

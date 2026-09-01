@@ -23,10 +23,10 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
+    "build": "node scripts/clean-lib.mjs && tsc -p tsconfig.json && node scripts/build-client.mjs",
     "dev": "tsc -p tsconfig.json --watch",
-    "prepare": "tsc -p tsconfig.json && node scripts/build-client.mjs",
-    "test": "tsc -p tsconfig.json && node scripts/build-client.mjs && node --test"
+    "prepare": "node scripts/clean-lib.mjs && tsc -p tsconfig.json && node scripts/build-client.mjs",
+    "test": "node scripts/clean-lib.mjs && tsc -p tsconfig.json && node scripts/build-client.mjs && node --test"
   },
   "dsh": {
     "bundle": {
@@ -38,6 +38,7 @@
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.1",
+    "@evlon/dsh-bridge": "file:../dsh-bridge",
     "@evlon/dsh-channel-core": "file:../dsh-channel-core",
     "@evlon/dsh-channel-matrix": "file:../dsh-channel-matrix",
     "@evlon/dsh-tools-channel": "file:../dsh-tools-channel"
