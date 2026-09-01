@@ -592,6 +592,63 @@ function TimelineTab(props) {
             })))
 }
 
+/** 主人收件箱：读 ownerInbox 镜像，主人点「批准/交付/拒绝」写 ownerDecisionOps 命令。 */
+function OwnerInboxTab(props) {
+  const ctx = props.ctx
+  const [scope] = React.useState(() => bindScope(ctx, MATRIX_NS))
+  const [inbox, setInbox] = React.useState(undefined)
+  React.useEffect(() => {
+    const update = () => {
+      const section = sectionOf(scope)
+      if (section !== undefined) {
+        setInbox(section.ownerInbox !== undefined
+          ? section.ownerInbox
+          : { items: [], updatedAt: 0 })
+      }
+    }
+    update()
+    if (scope !== undefined) return scope.subscribe(update)
+    return undefined
+  }, [scope])
+
+  const decide = (id, decision) => {
+    if (scope === undefined) return
+    scope.set('ownerDecisionOps', { seq: Date.now(), id, decision }).catch(() => {})
+  }
+
+  const items = inbox !== undefined ? (inbox.items ?? []) : []
+  return React.createElement('div', null,
+    items.length === 0
+      ? React.createElement('p', { style: HINT_STYLE },
+          '收件箱为空。分身向你请示/汇报后，待批事项会出现在这里，点「批准/交付」即可放行。')
+      : items.map((it) => {
+          const kindLabel = it.kind === 'clarify' ? '🤔 请示' : '📤 汇报'
+          const when = it.createdAt ? new Date(it.createdAt).toLocaleString('zh-CN', { hour12: false }) : ''
+          return React.createElement('div', {
+            key: it.id,
+            style: {
+              padding: '12px', marginBottom: '10px',
+              border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px',
+              background: 'var(--dsw-alias-bg-layer-1)',
+            },
+          },
+            React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' } },
+              React.createElement('span', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, kindLabel),
+              React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } }, when)),
+            React.createElement('div', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginBottom: '10px' } },
+              (it.text ?? '').length > 300 ? it.text.slice(0, 300) + '…' : (it.text ?? '')),
+            React.createElement('div', { style: { display: 'flex', gap: '8px' } },
+              React.createElement('button', {
+                style: { ...SMALL_BTN, background: 'var(--dsw-alias-state-success-primary)', color: 'var(--dsw-alias-bg-base)', padding: '6px 14px', fontSize: '13px' },
+                onClick: () => decide(it.id, 'approve'),
+              }, it.kind === 'clarify' ? '✅ 批准开工' : '✅ 交付'),
+              React.createElement('button', {
+                style: { ...SMALL_BTN, background: 'var(--dsw-alias-state-error-primary)', color: 'var(--dsw-alias-bg-base)', padding: '6px 14px', fontSize: '13px' },
+                onClick: () => decide(it.id, 'reject'),
+              }, '🚫 拒绝')))
+        }))
+}
+
 /** 任务列表渲染（供会话 tab 与所有任务面板共用）。 */
 const SMALL_BTN = {
   padding: '2px 10px', borderRadius: '6px', border: 'none',
@@ -926,6 +983,7 @@ function SecretaryDeskPanel(props) {
   ]
   const tabs = [
     { id: 'tasks', label: '任务' },
+    { id: 'inbox', label: '收件箱' },
     { id: 'timeline', label: '时间线' },
   ]
 
@@ -973,7 +1031,10 @@ function SecretaryDeskPanel(props) {
       tab === 'timeline'
         ? React.createElement('div', { style: { flex: 1, overflowY: 'auto', padding: '16px 20px' } },
             React.createElement(TimelineTab, { ctx }))
-        : React.createElement('div', { style: { flex: 1, display: 'flex', minHeight: 0 } },
+        : tab === 'inbox'
+          ? React.createElement('div', { style: { flex: 1, overflowY: 'auto', padding: '16px 20px' } },
+              React.createElement(OwnerInboxTab, { ctx }))
+          : React.createElement('div', { style: { flex: 1, display: 'flex', minHeight: 0 } },
             React.createElement('div', { style: { width: leftPct + '%', borderRight: '1px solid var(--dsw-alias-border-l1)', display: 'flex', flexDirection: 'column', minHeight: 0 } },
               React.createElement('div', { style: { padding: '12px 16px', borderBottom: '1px solid var(--dsw-alias-border-l1)', display: 'flex', gap: '6px', flexWrap: 'wrap' } },
                 groups.map((g) =>
