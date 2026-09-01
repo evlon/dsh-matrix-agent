@@ -107,6 +107,18 @@ npm start
 
 **改进循环**：跑完看断言 → 失败的断言即改进清单 → 改 dsh-matrix-agent 插件 → 点「🔄 重新开始」重测 → 对照报告确认改进。
 
+## 岗位验证（agent preset 切换）
+
+test-system 是独立进程，经真实 Matrix 与数字人交互，**不感知岗位**——数字人的岗位由
+dsh-matrix-agent 侧的 `agentPreset` 决定（岗位 preset 在 `@evlon/dsh-job-presets`）。
+
+验证某岗位：把数字人的 `agentPreset` 翻到目标岗位（改 profile 的 `cordis.patch.yml` 或
+settings.yaml 用户层 `dsh-matrix.agentPreset`），重启 dsh，然后跑 `task-flow` 场景：
+
+- `pm`：交付物带「用户价值/目标拆解/验收」措辞
+- `dev`：交付物带「根因/负责组/排期/验证闭环」措辞
+- 各岗位共用同一套秘书编排链路（请示→读数据→私发→等交付→发群），task-flow 断言岗位无关
+
 ## 扩展：新场景
 
 在 `src/scenarios/` 新建场景文件，返回 `TestRoomDef[]`（房间 + 同事 persona + 目标 + 断言），
@@ -114,4 +126,4 @@ npm start
 
 已注册场景：
 - `basic-chat`：基本对话（研发群 + 产品群，含回复/消息数断言）
-- `task-flow`：任务流转（占位；完整请示/交付流程需数字人开启 `digitalTwinMode`）
+- `task-flow`：任务流转（完整请示/交付流程，断言岗位无关，适用于验证任意岗位 preset）
