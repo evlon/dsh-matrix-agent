@@ -719,6 +719,18 @@ function SecretaryDeskPanel(props) {
           onClick: onClose,
           style: { ...SMALL_BTN, background: 'transparent', border: '1px solid var(--dsw-alias-border-l1)', color: 'var(--dsw-alias-label-primary)', padding: '4px 12px' },
         }, '✕ 关闭')),
+      // 引导条：秘书完整对话（请示/汇报/决策/回复）在 DSH 会话列表里的「秘书」会话中，
+      // 这里只保留「收件箱快捷审批」与「时间线」两个辅助入口。
+      React.createElement('div', {
+        style: {
+          padding: '10px 20px', borderBottom: '1px solid var(--dsw-alias-border-l1)',
+          background: 'var(--dsw-alias-interactive-bg-hover)',
+          color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', lineHeight: '18px',
+        },
+      },
+        React.createElement('div', { style: { color: 'var(--dsw-alias-label-primary)', fontWeight: 600, marginBottom: '2px' } },
+          '💬 完整对话请打开「秘书 · @分身」会话'),
+        '秘书协调各群数字分身的请示/汇报：能定的直接回 worker，需拍板的上呈给你。这里是快捷审批入口——待批事项点「批准/交付/拒绝」，完整消息流与回复请到会话列表打开秘书会话。'),
       tab === 'timeline'
         ? React.createElement('div', { style: { flex: 1, overflowY: 'auto', padding: '16px 20px' } },
             React.createElement(TimelineTab, { ctx }))
