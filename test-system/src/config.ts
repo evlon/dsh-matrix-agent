@@ -92,7 +92,9 @@ export function loadConfig(): TestConfig {
       port: Number(env['WEB_PORT'] ?? '3088'),
     },
     roundsPerRoom: Number(env['ROUNDS_PER_ROOM'] ?? '6'),
-    replyTimeoutSecs: Number(env['REPLY_TIMEOUT_SECS'] ?? '90'),
+    // 协调者架构下，worker 请示→秘书决策→回传→发群是多跳 LLM 协调，单跳约 80-180s；
+    // 默认 240s 以匹配多跳延迟，避免「数字人未回复」误判（可通过 REPLY_TIMEOUT_SECS 覆盖）。
+    replyTimeoutSecs: Number(env['REPLY_TIMEOUT_SECS'] ?? '240'),
     roomPrefix: env['ROOM_PREFIX'] ?? 'twin-test',
     autoStart: env['AUTO_START'] !== 'false',
   }
