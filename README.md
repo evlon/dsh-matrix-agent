@@ -10,8 +10,6 @@ src/
 ├── matrix.ts      # 兼容 shim：转发 @evlon/dsh-channel-matrix / @evlon/dsh-channel-core
 ├── tools.ts       # 兼容 shim：转发 @evlon/dsh-tools-channel
 └── client-main.js # 浏览器端源码（esbuild 打包为 __ModuleLoader__ bundle）：设置页（单入口+标签页，含时间线 tab）、会话任务 tab、秘书工作台面板
-
-test-system/     # 独立测试系统（真实 homeserver + AI 同事 + 断言引擎 + Web 实时界面，见下「测试系统」）
 ```
 
 > **组合包**：本包是「纯组合包」——桥接层（bridge/config/format/settings/store/auth-store/
@@ -277,11 +275,11 @@ corepack pnpm build       # tsc（lib/ 产物）+ esbuild 打包 src/client-main
 > 构建后自动 `node --check` 语法自检。改 client 半时改 `src/client-main.js`，不要改
 > `lib/client.js`。
 
-## 测试系统（test-system）
+## 测试系统（独立仓库 twin-test-system）
 
-独立于插件仓库根项目的 Node 测试项目（`test-system/`）：连**真实 Matrix homeserver**，
-模拟多个群 + 多个 **AI 同事**（LLM 扮演），对运行中的数字人发起真实对话，实时网页查看过程、
-断言评估、出测试报告——支撑「设计 → 开发 → 测试 → 改进」闭环。
+数字人行为测试系统已迁出为独立仓库 [`twin-test-system`](https://github.com/evlon/twin-test-system)：
+连**真实 Matrix homeserver**，模拟多个群 + 多个 **AI 同事**（LLM 扮演），对运行中的数字人发起
+真实对话，实时网页查看过程、断言评估、出测试报告——支撑「设计 → 开发 → 测试 → 改进」闭环。
 
 - **多群 + AI 同事**：同时跑多个测试房间（群），每房间独立对话循环；OpenAI 兼容 LLM 扮演同事
   （角色 persona + 房间上下文 + 测试目标），动态发言、追问细节
@@ -293,7 +291,7 @@ corepack pnpm build       # tsc（lib/ 产物）+ esbuild 打包 src/client-main
   房间卡显示 ✔/✘ 徽标、对话流逐条显示、聚合场景报告——失败的断言即改进清单，改完插件点「重新开始」重测
 - **秘书流程场景**：`task-flow` 场景 + `BossAgent`（模拟老板：监听数字人私聊，「任务请示」→批准、
   「交付确认」→确认交付）——数字人侧把 `twinModeRoomPrefix` 设为测试房间前缀即可在测试房间开秘书编排
-  （见 `test-system/README.md` 完整说明）
+- **仓库位置**：`E:\ai-works\twin-test-system`（独立 git 仓库；原 `dsh-matrix-agent/test-system` 子目录已移除）
 
 ## 已知限制与路线图
 
