@@ -20,8 +20,8 @@ src/
 > 本包只负责「组装」：把 bridge 挂进 cordis 组合、提供 cordis.patch.yml、以及 client 半的设置 UI。
 > 岗位人设与秘书工作流由独立岗位仓承载：`@evlon/dsh-job-pm` / `dsh-job-dev` / `dsh-job-qa` /
 > `dsh-job-leader` / `dsh-job-newbie` / `dsh-job-secretary`（每仓含 agent.cordis.yml + preset.yml + SKILL.md），
-> 开发期经 `E:\ai-works\dsh-jobs\<job>` junction 集合 + `dsh-job-install`（job_install 工具）落盘到 DSH_HOME；
-> 跨岗位通用沟通规范在 `communication` 技能（随 dsh-job-install 自带，安装任意岗位时一并落盘）。
+> 开发期经 `E:\ai-works\dsh-jobs\<job>` junction 集合 + `dsh-dev-job-install`（dev_job_install 工具）落盘到 DSH_HOME；
+> 跨岗位通用沟通规范在 `communication` 技能（随 dsh-dev-job-install 自带，安装任意岗位时一并落盘）。
 
 ## 架构
 
