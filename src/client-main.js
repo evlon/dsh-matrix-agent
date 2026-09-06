@@ -5,16 +5,19 @@
  * 以 factory(require) 注入，避免与 shell 的 React 实例冲突。
  *
  * 单入口：设置侧栏只注册一个「数字分身」入口（settings.section 'dsh-matrix'），
- * 内部用标签页分三个面板：
- * - Matrix 账号：连接信息 / 模型路由 / 白名单等
- * - 社交：自我介绍 / 成员记忆 / 主动打招呼
- * - 时间线：自我记忆查看/筛选/删除/清空
+ * 内部用一级标签页分区（二级 = 区内分块）：
+ * - 连接：Matrix 账号（连接信息）+ 模型路由（worker 默认）
+ * - 角色：数字人 worker / 秘书 / 前台接待（reception 分类表）
+ * - 社交：自我介绍 / 成员记忆 / 打招呼 / 测试房间前缀
+ * - 兜底话术：正则兜底 ack 文案（AI 接待关闭/失败时用）
+ *
+ * 运行时工作台（第二入口「分身工作台」sidebar.footer.action）：
+ * - 任务：各房间当前忙/待交付/请示中状态（taskBoard 镜像）
+ * - 收件箱：主人待批请示/汇报（ownerInbox 镜像 + ownerDecisionOps 决策）
+ * - 时间线：自我记忆查看/筛选/删除/清空（timelineSnapshot + timelineOps）
  *
  * 岗位人设与秘书工作流由岗位 preset（agent.cordis.yml 的 persona 行）承载，
  * 不再在此注入（灵魂子系统已彻底移除）。
- *
- * 会话视图：在「对话/轨迹/树状视图」后新增「任务」tab；会话头部新增
- * 「所有任务」入口 + 全局面板。
  *
  * 能选择的不填写：provider/model/agentPreset 用 dsh 运行时 API 下拉；
  * owner 提供「由分身账号 ai- 前缀推导」的默认值提示（仅配置页，运行期不推导）。
@@ -240,8 +243,9 @@ function AccountTab(props) {
   const defaultOwner = deriveDefaultOwner(form.userId)
 
   return React.createElement('div', null,
+    React.createElement('div', { style: SECTION_TITLE_STYLE }, 'Matrix 账号'),
     React.createElement('p', { style: HINT_STYLE },
-      'Matrix 账号与桥接配置。连接类字段（服务器地址 / Access Token / 账号 ID）保存后需重启 dsh 才生效；其余字段即时生效。'),
+      'Matrix 连接与桥接配置。连接类字段（服务器地址 / Access Token / 账号 ID）保存后需重启 dsh 才生效；其余字段即时生效。'),
     React.createElement(TextField, { label: 'Homeserver URL（需重启）', value: form.homeserverUrl, onChange: set('homeserverUrl'), placeholder: 'https://im-ipm.ict.cmcc' }),
     React.createElement(TextField, { label: '分身账号 ID（需重启）', value: form.userId, onChange: set('userId'), placeholder: '@ai-xxx:server' }),
     React.createElement(TextField, { label: 'Access Token（需重启，已保存不回显）', value: '', onChange: set('accessToken'), type: 'password', placeholder: '留空保持不变' }),
@@ -267,6 +271,8 @@ function AccountTab(props) {
       onChange: (v) => set('allowedUserIds')(v.split(',').map((s) => s.trim()).filter((s) => s !== '')),
       hint: '格式：@user:server，逗号分隔。成员加入后分身会自动记住（/memory 查看）。',
     }),
+    React.createElement('div', { style: { ...SECTION_TITLE_STYLE, marginTop: '16px' } }, '模型路由（数字人 worker 默认）'),
+    React.createElement('p', { style: HINT_STYLE }, '数字人（worker）执行任务用的模型；秘书/接待可在「角色」tab 单独覆盖。'),
     React.createElement(SelectField, {
       label: 'LLM Provider', value: form.provider, onChange: set('provider'),
       options: providerOptions.length > 0 ? providerOptions : [{ value: '', label: '（加载中或未配置）' }],
@@ -279,27 +285,146 @@ function AccountTab(props) {
       label: 'Agent Preset', value: form.agentPreset, onChange: set('agentPreset'),
       options: presetOptions.length > 0 ? presetOptions : [{ value: '', label: '（加载中或未配置）' }],
     }),
+    React.createElement(SelectField, {
+      label: REASONING_LABELS.worker, value: form.workerReasoningEffort, onChange: set('workerReasoningEffort'),
+      options: REASONING_OPTIONS, hint: REASONING_HINT,
+    }),
     React.createElement(NumberField, { label: '单条消息字符上限', value: form.chunkMaxChars, onChange: set('chunkMaxChars'), min: 100, max: 20000, step: 100 }),
     React.createElement(SwitchField, { label: '主动消息需审批（proactiveSendRequiresApproval）', value: form.proactiveSendRequiresApproval, onChange: set('proactiveSendRequiresApproval') }),
     React.createElement(SwitchField, { label: '保留富文本/回复/编辑语义（preserveRichText）', value: form.preserveRichText, onChange: set('preserveRichText') }),
-    React.createElement(SaveBar, { onSave: save, saved, hint: '连接类字段重启后生效', onReset: () => reset('account') }))
+    React.createElement(SaveBar, { onSave: save, saved, hint: '连接类字段重启后生效', onReset: () => reset('connection') }))
 }
 
-/** 社交标签页。 */
+/** 社交标签页：自我介绍/成员记忆/打招呼/测试房间。 */
 function SocialTab(props) {
   const { form, set, save, saved, reset } = props
   return React.createElement('div', null,
     React.createElement('p', { style: HINT_STYLE },
-      '分身与同事/其他数字人的社交行为：入群自我介绍、成员记忆、主动打招呼。'),
+      '分身与同事/其他数字人的社交行为：入群自我介绍、成员记忆、打招呼。'),
     React.createElement(SwitchField, { label: '入群主动自我介绍（autoIntroduce）', value: form.autoIntroduce, onChange: set('autoIntroduce') }),
     React.createElement(NumberField, { label: '自我介绍 @ 人数上限', value: form.maxSelfIntroMentions, onChange: set('maxSelfIntroMentions'), min: 0, max: 200, step: 1 }),
     React.createElement(TextField, { label: '自我介绍模板', value: form.selfIntroTemplate, onChange: set('selfIntroTemplate'), textarea: true, hint: '占位符：{{userId}} / {{role}} / {{owner}}' }),
     React.createElement(SwitchField, { label: '记住成员（memberMemory）', value: form.memberMemory, onChange: set('memberMemory'), hint: '记住每个房间里见过的成员（含其他数字人），/memory 查看' }),
     React.createElement(SwitchField, { label: '新成员入群主动打招呼（autoGreet）', value: form.autoGreet, onChange: set('autoGreet'), hint: '新成员（含其他数字人）入群时提示分身主动了解对方' }),
     React.createElement(TextField, { label: '测试房间前缀（testRoomPrefix）', value: form.testRoomPrefix, onChange: set('testRoomPrefix'), hint: '房间名含此前缀视为测试环境：分身每次回复都会被提示「请勿真实执行任务/修改文件/发真实消息」。留空关闭' }),
-    React.createElement(SwitchField, { label: '群聊默认启用秘书编排（secretaryGroupDefault）', value: form.secretaryGroupDefault, onChange: set('secretaryGroupDefault'), hint: 'Matrix 群聊消息默认进任务队列待 owner 审核/请示/确认；@ 提及自己的即时交流仍直接回复。关闭后仅 digitalTwinMode 或前缀匹配的房间启用' }),
-    React.createElement(SwitchField, { label: '私聊也启用秘书编排（secretaryDmDefault）', value: form.secretaryDmDefault, onChange: set('secretaryDmDefault'), hint: '默认关闭（私聊直接对话）；开启后数字分身的私聊消息也进任务队列待 owner 审核' }),
     React.createElement(SaveBar, { onSave: save, saved, onReset: () => reset('social') }))
+}
+
+/** 兜底话术标签页：正则兜底 ack 文案（仅 AI 接待关闭/判定失败时生效）。 */
+function ScriptsTab(props) {
+  const { form, set, save, saved, reset } = props
+  const reception = [
+    { field: 'receptionAckNewTask', label: '① 新任务收到（房间不忙时 @ 派活）', ph: '收到，我这就去整理{{taskHint}}，稍后把结果发你～' },
+    { field: 'receptionAckBusyQuestion', label: '② 忙时被问问题', ph: '[前台接待] @{{lp}} 这条我记下了，手头正忙（处理任务中）{{taskDesc}}{{eta}}，处理完马上回你；有急需可以再把关键点说一遍～' },
+    { field: 'receptionAckBusy', label: '③ 忙时普通消息', ph: '[前台接待] @{{lp}} 收到，我手头正忙（处理任务中）{{taskDesc}}{{eta}}，稍后回你这条～' },
+    { field: 'receptionRejected', label: '④ 主人拒绝开工', ph: '[前台接待] 主人暂时不同意开工，任务「{{summary}}」先搁置。' },
+    { field: 'receptionGiveUp', label: '⑤ 跟进超时占位（提醒 2 次仍无果后代发）', ph: '[前台接待] 我正在整理「{{summary}}」，结果稍后同步，请稍等～' },
+  ]
+  return React.createElement('div', null,
+    React.createElement('p', { style: HINT_STYLE },
+      '以下是「正则兜底」话术：仅在 AI 接待层关闭（receptionEnabled=false）或 AI 判定失败时生效。若已启用 AI 接待，请到「角色 → 前台接待 → 分类表」改每类的 ackText。'),
+    React.createElement('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginBottom: '12px', lineHeight: '20px' } },
+      '占位符：{{lp}} 发送者短名 · {{taskHint}} 任务摘要（含「」） · {{taskDesc}} 「正在做…」段 · {{eta}} 已耗时/ETA 段 · {{summary}} 任务摘要（含「」）。清空某条 = 该场景不自动回复。'),
+    reception.map((r) => React.createElement(TextField, {
+      key: r.field, label: r.label, value: form[r.field], onChange: set(r.field),
+      textarea: true, placeholder: r.ph,
+    })),
+    React.createElement(SaveBar, { onSave: save, saved, hint: '保存即生效，无需重启', onReset: () => reset('scripts') }))
+}
+
+/** 角色标签页：worker / 秘书 / 前台接待 三块（为将来各角色独立配置留扩展位）。 */
+function RolesTab(props) {
+  const { form, set, save, saved, reset, providers, modelGroups, conn } = props
+  const providerOptions = providers.length > 0
+    ? providers
+    : (form.receptionProvider !== undefined && form.receptionProvider !== '' ? [{ value: form.receptionProvider, label: form.receptionProvider + '（当前）' }] : [])
+  const modelOptions = modelOptionsFor(modelGroups, form.receptionProvider, form.receptionModel)
+  // receptionKinds 编辑：读当前 form（可能 undefined → 用默认）。
+  const kinds = (form.receptionKinds && typeof form.receptionKinds === 'object') ? form.receptionKinds : defaultReceptionKinds()
+  const setKind = (kindKey, field, value) => {
+    const next = Object.assign({}, kinds, {
+      [kindKey]: Object.assign({}, kinds[kindKey], { [field]: value }),
+    })
+    set('receptionKinds')(next)
+  }
+
+  return React.createElement('div', null,
+    // ── 数字人 worker 块 ──
+    React.createElement('div', { style: { ...SECTION_TITLE_STYLE } }, '数字人（worker）'),
+    React.createElement('p', { style: HINT_STYLE },
+      '数字人是执行岗：收到群任务后请示 → 读真实数据 → 整理 → 汇报 → 交付。模型/思考强度在「连接 → 模型路由」配置。'),
+    React.createElement(SwitchField, { label: '群聊默认启用秘书编排（secretaryGroupDefault）', value: form.secretaryGroupDefault, onChange: set('secretaryGroupDefault'), hint: '群聊任务默认走「请示→汇报→交付」闭环（@ 提及自己的即时交流仍直接回复）；关闭后仅前缀匹配房间启用' }),
+    React.createElement(SwitchField, { label: '私聊也启用秘书编排（secretaryDmDefault）', value: form.secretaryDmDefault, onChange: set('secretaryDmDefault'), hint: '默认关闭（私聊直接对话）；开启后数字分身的私聊消息也走请示闭环' }),
+    React.createElement(NumberField, { label: '开工请示超时（taskClarifyTimeoutSecs，秒）', value: form.taskClarifyTimeoutSecs, onChange: set('taskClarifyTimeoutSecs'), min: 10, max: 3600, step: 10, hint: 'worker 请示主人开工后阻塞等待的秒数；超时转「挂起待答」，主人晚答复会唤醒继续' }),
+    React.createElement(NumberField, { label: '交付汇报超时（taskConfirmTimeoutSecs，秒）', value: form.taskConfirmTimeoutSecs, onChange: set('taskConfirmTimeoutSecs'), min: 10, max: 3600, step: 10, hint: 'worker 汇报交付后阻塞等待主人确认的秒数；超时转「挂起待答」' }),
+    React.createElement(NumberField, { label: '等秘书回传超时（secretaryDecisionTimeoutSecs，秒）', value: form.secretaryDecisionTimeoutSecs, onChange: set('secretaryDecisionTimeoutSecs'), min: 10, max: 3600, step: 10, hint: 'worker 请示/汇报后等待秘书回传决策的秒数；测试房间自动缩短为 20s' }),
+
+    // ── 秘书块 ──
+    React.createElement('div', { style: { ...SECTION_TITLE_STYLE, marginTop: '20px' } }, '秘书（secretary）'),
+    React.createElement('p', { style: HINT_STYLE },
+      '秘书是协调岗：能定的直接回 worker，需拍板的上呈主人。秘书完整对话在会话列表的「秘书」会话中。'),
+    React.createElement(SelectField, {
+      label: '秘书思考强度（secretaryReasoningEffort）', value: form.secretaryReasoningEffort, onChange: set('secretaryReasoningEffort'),
+      options: REASONING_OPTIONS, hint: REASONING_HINT,
+    }),
+
+    // ── 前台接待块 ──
+    React.createElement('div', { style: { ...SECTION_TITLE_STYLE, marginTop: '20px' } }, '前台接待（reception）'),
+    React.createElement('p', { style: HINT_STYLE },
+      '前台接待是即时礼貌层：对每条入站消息做语义分类（独立 agent，零工具），按下面分类表执行「是否秒级 ack / 是否置忙 / 是否转交 worker」。'),
+    React.createElement(SwitchField, { label: '启用 AI 接待层（receptionEnabled）', value: form.receptionEnabled, onChange: set('receptionEnabled'), hint: '启用后由独立「前台接待」agent 判定消息分类；关闭则回退内置正则规则（见「兜底话术」tab）' }),
+    React.createElement('div', { style: { ...SUB_BLOCK_STYLE } },
+      React.createElement('div', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)', marginBottom: '8px' } }, '接待 Agent'),
+      React.createElement('p', { style: HINT_STYLE }, '岗位 preset 固定为「前台接待」（reception，零工具，只分类不执行），Provider/Model 覆盖主路由；思考强度建议恒 off。'),
+      React.createElement(SelectField, {
+        label: '接待 Provider', value: form.receptionProvider, onChange: set('receptionProvider'),
+        options: providerOptions.length > 0 ? providerOptions : [{ value: '', label: '（默认跟随主路由）' }],
+      }),
+      React.createElement(SelectField, {
+        label: '接待模型', value: form.receptionModel, onChange: set('receptionModel'),
+        options: modelOptions.length > 0 ? modelOptions : [{ value: '', label: '（默认跟随主路由）' }],
+      }),
+      React.createElement(SelectField, {
+        label: '接待思考强度', value: form.receptionReasoningEffort, onChange: set('receptionReasoningEffort'),
+        options: [{ value: 'off', label: 'off — 关闭思考（推荐）' }, { value: 'low', label: 'low' }, { value: 'high', label: 'high' }, { value: 'max', label: 'max' }],
+      }),
+      React.createElement('div', { style: { display: 'flex', gap: '16px', flexWrap: 'wrap' } },
+        React.createElement('div', { style: { flex: 1, minWidth: '150px' } },
+          React.createElement(NumberField, { label: '判定超时（秒）', value: form.receptionTimeoutSecs, onChange: set('receptionTimeoutSecs'), min: 1, max: 60, step: 1 })),
+        React.createElement('div', { style: { flex: 1, minWidth: '150px' } },
+          React.createElement(NumberField, { label: '最短判定长度', value: form.receptionMinLength, onChange: set('receptionMinLength'), min: 0, max: 200, step: 1 })),
+        React.createElement('div', { style: { flex: 1, minWidth: '150px' } },
+          React.createElement(NumberField, { label: '房间节流（秒）', value: form.receptionThrottleSecs, onChange: set('receptionThrottleSecs'), min: 0, max: 300, step: 1 }))),
+    ),
+    React.createElement('div', { style: { ...SUB_BLOCK_STYLE, marginTop: '12px' } },
+      React.createElement('div', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)', marginBottom: '4px' } }, '分类表（receptionKinds）'),
+      React.createElement('p', { style: HINT_STYLE },
+        '接待 agent 按这些分类判定消息。每类可改显示名、描述（判定依据）、是否发 ack、是否置忙、是否转交 worker，及自定义 ack 话术。' + RECEPTION_PLACEHOLDER_HINT),
+      RECEPTION_KIND_KEYS.map((key) => {
+        const def = kinds[key] || { label: key, describe: '', ack: true, ackText: '', busy: false, forward: true }
+        return React.createElement('div', {
+          key, style: { border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px', padding: '10px', marginBottom: '8px', background: 'var(--dsw-alias-bg-layer-1)' },
+        },
+          React.createElement(TextField, { label: key + ' · 显示名', value: def.label, onChange: (v) => setKind(key, 'label', v) }),
+          React.createElement(TextField, { label: '描述（判定依据）', value: def.describe, onChange: (v) => setKind(key, 'describe', v), textarea: true }),
+          React.createElement('div', { style: { display: 'flex', gap: '16px', flexWrap: 'wrap' } },
+            React.createElement(SwitchField, { label: '发礼貌 ack', value: def.ack === true, onChange: (v) => setKind(key, 'ack', v) }),
+            React.createElement(SwitchField, { label: '视为忙（不打扰）', value: def.busy === true, onChange: (v) => setKind(key, 'busy', v) }),
+            React.createElement(SwitchField, { label: '转交 worker', value: def.forward === true, onChange: (v) => setKind(key, 'forward', v) })),
+          React.createElement(TextField, { label: '自定义 ack 话术（留空用默认）', value: def.ackText, onChange: (v) => setKind(key, 'ackText', v), textarea: true, placeholder: '收到，我这就去整理{{taskHint}}，稍后把结果发你～' }))
+      })),
+    React.createElement(SaveBar, { onSave: save, saved, hint: '保存即生效（LIVE 热更新）', onReset: () => reset('roles') }))
+}
+
+/** 区块标题样式。 */
+const SECTION_TITLE_STYLE = {
+  fontSize: '15px', fontWeight: 700, color: 'var(--dsw-alias-label-primary)',
+  borderBottom: '1px solid var(--dsw-alias-border-l1)', paddingBottom: '4px', marginBottom: '8px',
+}
+/** 子区块容器样式（卡片）。 */
+const SUB_BLOCK_STYLE = {
+  border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px',
+  padding: '12px', marginBottom: '8px', background: 'var(--dsw-alias-bg-layer-0)',
 }
 
 /** 设置页显示默认值：settings 未就绪/加载失败时也展示合理默认（与 config.ts 默认一致）。 */
@@ -315,6 +440,8 @@ const FORM_DEFAULTS = {
   provider: '',
   model: '',
   agentPreset: 'standard',
+  workerReasoningEffort: '',
+  secretaryReasoningEffort: '',
   chunkMaxChars: 4000,
   proactiveSendRequiresApproval: true,
   preserveRichText: true,
@@ -330,6 +457,26 @@ const FORM_DEFAULTS = {
   secretaryGroupDefault: true,
   // 私聊默认秘书编排（默认关闭）。
   secretaryDmDefault: false,
+  // 秘书编排超时（秒）。
+  taskClarifyTimeoutSecs: 120,
+  taskConfirmTimeoutSecs: 600,
+  secretaryDecisionTimeoutSecs: 180,
+  // 前台接待层话术模板（默认=bridge 内置文案，占位符见话术 tab 提示）。
+  receptionAckNewTask: '收到，我这就去整理{{taskHint}}，稍后把结果发你～',
+  receptionAckBusyQuestion: '[前台接待] @{{lp}} 这条我记下了，手头正忙（处理任务中）{{taskDesc}}{{eta}}，处理完马上回你；有急需可以再把关键点说一遍～',
+  receptionAckBusy: '[前台接待] @{{lp}} 收到，我手头正忙（处理任务中）{{taskDesc}}{{eta}}，稍后回你这条～',
+  receptionRejected: '[前台接待] 主人暂时不同意开工，任务「{{summary}}」先搁置。',
+  receptionGiveUp: '[前台接待] 我正在整理「{{summary}}」，结果稍后同步，请稍等～',
+  // AI 接待层（reception）。
+  receptionEnabled: false,
+  receptionPreset: 'reception',
+  receptionProvider: '',
+  receptionModel: '',
+  receptionReasoningEffort: 'off',
+  receptionTimeoutSecs: 3,
+  receptionMinLength: 0,
+  receptionThrottleSecs: 0,
+  receptionKinds: defaultReceptionKinds(),
 }
 
 /** 把 settings 用户层字段合并进顶层 form；settings 未就绪时用显示默认值。 */
@@ -383,8 +530,10 @@ function MatrixSettingsPage(props) {
 
   // 各 tab 的字段清单（用于「重置为默认」）。
   const TAB_FIELDS = {
-    account: ['homeserverUrl', 'userId', 'accessToken', 'instanceKey', 'owner', 'respondToAll', 'allowAllUsers', 'allowedUserIds', 'provider', 'model', 'agentPreset', 'chunkMaxChars', 'proactiveSendRequiresApproval', 'preserveRichText'],
-    social: ['autoIntroduce', 'maxSelfIntroMentions', 'memberMemory', 'autoGreet', 'selfIntroTemplate', 'testRoomPrefix', 'secretaryGroupDefault', 'secretaryDmDefault'],
+    connection: ['homeserverUrl', 'userId', 'accessToken', 'instanceKey', 'owner', 'respondToAll', 'allowAllUsers', 'allowedUserIds', 'provider', 'model', 'agentPreset', 'workerReasoningEffort', 'chunkMaxChars', 'proactiveSendRequiresApproval', 'preserveRichText'],
+    roles: ['secretaryGroupDefault', 'secretaryDmDefault', 'taskClarifyTimeoutSecs', 'taskConfirmTimeoutSecs', 'secretaryDecisionTimeoutSecs', 'secretaryReasoningEffort', 'receptionEnabled', 'receptionPreset', 'receptionProvider', 'receptionModel', 'receptionReasoningEffort', 'receptionTimeoutSecs', 'receptionMinLength', 'receptionThrottleSecs', 'receptionKinds'],
+    social: ['autoIntroduce', 'maxSelfIntroMentions', 'memberMemory', 'autoGreet', 'selfIntroTemplate', 'testRoomPrefix'],
+    scripts: ['receptionAckNewTask', 'receptionAckBusyQuestion', 'receptionAckBusy', 'receptionRejected', 'receptionGiveUp'],
   }
   // 重置某 tab：清除 settings 用户层对应字段（回继承默认），并同步前端 form。
   const resetTab = (tabId) => {
@@ -405,9 +554,10 @@ function MatrixSettingsPage(props) {
   }
 
   const tabs = [
-    { id: 'account', label: 'Matrix 账号' },
+    { id: 'connection', label: '连接' },
+    { id: 'roles', label: '角色' },
     { id: 'social', label: '社交' },
-    { id: 'timeline', label: '时间线' },
+    { id: 'scripts', label: '兜底话术' },
   ]
   const tabProps = { scope, form, set, save, saved, conn, reset: resetTab, ...catalogs }
 
@@ -434,9 +584,10 @@ function MatrixSettingsPage(props) {
           },
         }, tab.label))),
     React.createElement('div', { role: 'tabpanel' },
-      active === 'account' ? React.createElement(AccountTab, tabProps)
+      active === 'connection' ? React.createElement(AccountTab, tabProps)
+        : active === 'roles' ? React.createElement(RolesTab, tabProps)
         : active === 'social' ? React.createElement(SocialTab, tabProps)
-        : React.createElement(TimelineTab, { ctx })))
+        : React.createElement(ScriptsTab, tabProps)))
 }
 
 /** 从 dsh-matrix settings 读自我时间线快照（运行时镜像，仅元数据）。 */
@@ -564,6 +715,107 @@ const SMALL_BTN = {
   cursor: 'pointer', fontSize: '12px', whiteSpace: 'nowrap', marginTop: '1px',
 }
 
+/** 思考强度选项（与 codebuddy adapter 的 reasoningEffort 值域一致；'' = 不干预）。 */
+const REASONING_OPTIONS = [
+  { value: '', label: '（不干预，跟随默认）' },
+  { value: 'off', label: 'off — 关闭思考（最快）' },
+  { value: 'low', label: 'low — 轻量思考' },
+  { value: 'high', label: 'high — 标准思考' },
+  { value: 'max', label: 'max — 深度思考' },
+]
+/** 思考强度提示（两个字段共用）。 */
+const REASONING_HINT = '改动只对之后新创建的会话生效；已存在的旧会话会沿用建立时的强度，如需切换请删除对应会话重建。'
+const REASONING_LABELS = {
+  worker: '数字人思考强度（workerReasoningEffort）',
+  secretary: '秘书思考强度（secretaryReasoningEffort）',
+}
+
+/** 前台接待内置 5 类分类的默认定义（与 config.ts defaultReceptionKinds 对齐）。 */
+function defaultReceptionKinds() {
+  return {
+    'new-task': { label: '新任务', describe: '同事明确要求数字员工动手执行的任务：整理/汇总/编写/分析/排期/读取文件等，通常有可交付成果，特征是命令式或请求式、指向未来的产出。', ack: true, ackText: '', busy: true, forward: true },
+    'busy-question': { label: '忙时追问', describe: 'worker 正在处理任务（房间忙）时，同事发来的追问/澄清/问题，期望 worker 处理完当前任务后回答。注意：即便不带问号，只要明显是针对进行中任务的追问就归此类。', ack: true, ackText: '', busy: false, forward: true },
+    'busy-plain': { label: '忙时普通消息', describe: 'worker 忙时同事发来的非问题类消息：补充信息/同步/简单说明/转发材料，需要礼貌回应但不打断当前工作。', ack: true, ackText: '', busy: false, forward: true },
+    'closing-ack': { label: '收尾确认', describe: '同事对已交付结果的验收/确认/致谢/收尾（如「收到，清单没问题，辛苦了」「行，先这样，不打扰了」）。表示话题已闭合，不是新任务、不需要 worker 再动手。', ack: false, ackText: '', busy: false, forward: false },
+    chat: { label: '闲聊问答', describe: '普通对话/闲聊/答疑，无需动手执行，worker 直接回复即可。接待层不抢答。', ack: false, ackText: '', busy: false, forward: true },
+  }
+}
+/** 前台接待分类表的 key 顺序（UI 固定渲染这些内置类）。 */
+const RECEPTION_KIND_KEYS = ['new-task', 'busy-question', 'busy-plain', 'closing-ack', 'chat']
+/** reception ackText 占位符说明。 */
+const RECEPTION_PLACEHOLDER_HINT = '占位符：{{lp}} 发送者短名 · {{taskHint}} 任务摘要 · {{taskDesc}} 「正在做…」段 · {{eta}} 已耗时/ETA 段；留空 = 用默认话术'
+
+/** 任务看板：读 taskBoard 镜像，展示各房间当前忙/待交付/请示中状态（房间级聚合）。 */
+function TaskBoardTab(props) {
+  const ctx = props.ctx
+  const [scope] = React.useState(() => bindScope(ctx, MATRIX_NS))
+  const [board, setBoard] = React.useState(undefined)
+  React.useEffect(() => {
+    const update = () => {
+      const section = sectionOf(scope)
+      if (section !== undefined) {
+        setBoard(section.taskBoard !== undefined
+          ? section.taskBoard
+          : { rows: [], updatedAt: 0 })
+      }
+    }
+    update()
+    if (scope !== undefined) return scope.subscribe(update)
+    return undefined
+  }, [scope])
+
+  const rows = board !== undefined ? (board.rows ?? []) : []
+  const fmtRoom = (r) => (r.roomName !== undefined && r.roomName !== '' && r.roomName !== r.roomId)
+    ? r.roomName
+    : (r.roomId !== undefined && r.roomId.length > 28 ? r.roomId.slice(0, 28) + '…' : (r.roomId ?? '?'))
+  const fmtElapsed = (since) => {
+    if (!since) return ''
+    const s = Math.floor((Date.now() - since) / 1000)
+    if (s < 15) return '刚开工'
+    if (s < 3600) return `已 ${Math.max(1, Math.round(s / 60))} 分钟`
+    const h = Math.floor(s / 3600)
+    const m = Math.round((s % 3600) / 60)
+    return `已 ${h} 小时${m > 0 ? ` ${m} 分` : ''}`
+  }
+  const stateMeta = (state) => {
+    if (state === 'busy') return { icon: '🔴', text: '忙', color: 'var(--dsw-alias-state-error-primary)' }
+    if (state === 'awaiting-delivery') return { icon: '🟡', text: '待交付', color: 'var(--dsw-alias-state-warning-primary)' }
+    return { icon: '⚪', text: '请示中', color: 'var(--dsw-alias-label-secondary)' }
+  }
+
+  return React.createElement('div', null,
+    React.createElement('p', { style: HINT_STYLE },
+      '各房间当前任务状态（房间级聚合，仅活跃态）。数字人正在处理任务、有待交付结果、或请示中等待拍板时会出现在这里。'),
+    board === undefined
+      ? React.createElement('p', { style: HINT_STYLE }, '任务看板加载中…')
+      : rows.length === 0
+        ? React.createElement('p', { style: HINT_STYLE }, '暂无进行中任务。同事派活后，对应房间会出现在这里。')
+        : React.createElement('div', null,
+            rows.map((r) => {
+              const meta = stateMeta(r.state)
+              return React.createElement('div', {
+                key: r.roomId,
+                style: {
+                  display: 'flex', alignItems: 'center', gap: '10px',
+                  padding: '10px 12px', marginBottom: '6px',
+                  border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px',
+                  background: 'var(--dsw-alias-bg-layer-1)',
+                },
+              },
+                React.createElement('span', { style: { fontSize: '14px' } }, meta.icon),
+                React.createElement('div', { style: { flex: 1, minWidth: 0 } },
+                  React.createElement('div', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } },
+                    fmtRoom(r)),
+                  React.createElement('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginTop: '2px' } },
+                    (r.state === 'busy' ? `正在做「${r.label}」` : r.state === 'awaiting-delivery' ? `待交付：「${r.label}」` : `请示中：「${r.label}」`) +
+                    (r.since ? ` · ${fmtElapsed(r.since)}` : '') +
+                    (r.remindCount ? ` · 已提醒 ${r.remindCount}/2 次` : ''))),
+                React.createElement('span', {
+                  style: { fontSize: '11px', color: meta.color, whiteSpace: 'nowrap', padding: '2px 8px', borderRadius: '999px', border: '1px solid ' + meta.color },
+                }, meta.text))
+            })))
+}
+
 /** 主人收件箱：读 ownerInbox 镜像，主人点「批准/交付/拒绝」写 ownerDecisionOps 命令。 */
 function OwnerInboxTab(props) {
   const ctx = props.ctx
@@ -621,17 +873,19 @@ function OwnerInboxTab(props) {
         }))
 }
 
-/** 秘书工作台入口：侧栏/头部快捷入口，带待批角标（收件箱待批数）。 */
-function SecretaryDeskButton(props) {
+/** 分身工作台入口按钮：带待批角标（收件箱待批数 + 任务看板活跃数）。 */
+function TwinDeskButton(props) {
   const ctx = props.ctx
   const wide = props.wide !== false
   const [scope] = React.useState(() => bindScope(ctx, MATRIX_NS))
   const [inbox, setInbox] = React.useState(undefined)
+  const [board, setBoard] = React.useState(undefined)
   React.useEffect(() => {
     const update = () => {
       const section = sectionOf(scope)
       if (section !== undefined) {
         setInbox(section.ownerInbox !== undefined ? section.ownerInbox : { items: [], updatedAt: 0 })
+        setBoard(section.taskBoard !== undefined ? section.taskBoard : { rows: [], updatedAt: 0 })
       }
     }
     update()
@@ -640,11 +894,13 @@ function SecretaryDeskButton(props) {
   }, [scope])
   const [open, setOpen] = React.useState(false)
   const attention = inbox !== undefined ? (inbox.items ?? []).length : 0
+  const active = board !== undefined ? (board.rows ?? []).length : 0
+  const badge = attention > 0 ? attention : active
   return React.createElement(React.Fragment, null,
     React.createElement('button', {
       onClick: () => setOpen((v) => !v),
-      title: '秘书工作台：主人收件箱 + 自我记忆',
-      'aria-label': '秘书工作台' + (attention > 0 ? '（' + attention + ' 待批）' : ''),
+      title: '分身工作台：任务看板 / 主人收件箱 / 自我时间线',
+      'aria-label': '分身工作台' + (attention > 0 ? '（' + attention + ' 待批）' : ''),
       style: {
         display: 'flex', alignItems: 'center', gap: '6px',
         padding: wide ? '6px 12px' : '6px',
@@ -654,28 +910,30 @@ function SecretaryDeskButton(props) {
         position: 'relative',
       },
     },
-      React.createElement('span', { 'aria-hidden': true, style: { fontSize: '15px' } }, '📋'),
-      wide ? React.createElement('span', null, '秘书工作台') : null,
-      attention > 0
+      React.createElement('span', { 'aria-hidden': true, style: { fontSize: '15px' } }, '📊'),
+      wide ? React.createElement('span', null, '分身工作台') : null,
+      badge > 0
         ? React.createElement('span', {
             style: {
               position: 'absolute', top: '-4px', right: '-4px',
               minWidth: '16px', height: '16px', borderRadius: '999px',
-              background: 'var(--dsw-alias-state-error-primary)', color: 'var(--dsw-alias-bg-base)',
+              background: attention > 0 ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-label-secondary)',
+              color: 'var(--dsw-alias-bg-base)',
               fontSize: '10px', lineHeight: '16px', textAlign: 'center', padding: '0 4px',
             },
-          }, String(attention))
+          }, String(badge))
         : null),
-    open ? React.createElement(SecretaryDeskPanel, { ctx, onClose: () => setOpen(false) }) : null)
+    open ? React.createElement(TwinDeskPanel, { ctx, onClose: () => setOpen(false) }) : null)
 }
 
-/** 秘书工作台大尺寸面板：含「收件箱」「时间线」两个 tab（彻底分层后无任务队列）。 */
-function SecretaryDeskPanel(props) {
+/** 分身工作台大尺寸面板：任务看板 / 收件箱 / 时间线 三 tab。 */
+function TwinDeskPanel(props) {
   const { ctx, onClose } = props
-  const [tab, setTab] = React.useState('inbox')
+  const [tab, setTab] = React.useState('tasks')
   const tabs = [
-    { id: 'inbox', label: '收件箱' },
-    { id: 'timeline', label: '时间线' },
+    { id: 'tasks', label: '📋 任务' },
+    { id: 'inbox', label: '✅ 待批' },
+    { id: 'timeline', label: '🕘 时间线' },
   ]
 
   return React.createElement(React.Fragment, null,
@@ -686,7 +944,7 @@ function SecretaryDeskPanel(props) {
     React.createElement('div', {
       style: {
         position: 'fixed', top: 0, bottom: 0, right: 0,
-        width: 'min(720px, 56vw)', minWidth: '560px', maxWidth: '100vw', zIndex: 1000,
+        width: 'min(760px, 58vw)', minWidth: '560px', maxWidth: '100vw', zIndex: 1000,
         background: 'var(--dsw-alias-bg-layer-1)',
         borderLeft: '1px solid var(--dsw-alias-border-l2)',
         boxShadow: '-8px 0 32px rgba(0,0,0,0.25)',
@@ -700,7 +958,7 @@ function SecretaryDeskPanel(props) {
         },
       },
         React.createElement('h3', { style: { margin: 0, fontSize: '16px', color: 'var(--dsw-alias-label-primary)', whiteSpace: 'nowrap' } },
-          '秘书工作台'),
+          '分身工作台'),
         React.createElement('div', { style: { display: 'flex', gap: '2px' } },
           tabs.map((t) =>
             React.createElement('button', {
@@ -719,8 +977,7 @@ function SecretaryDeskPanel(props) {
           onClick: onClose,
           style: { ...SMALL_BTN, background: 'transparent', border: '1px solid var(--dsw-alias-border-l1)', color: 'var(--dsw-alias-label-primary)', padding: '4px 12px' },
         }, '✕ 关闭')),
-      // 引导条：秘书完整对话（请示/汇报/决策/回复）在 DSH 会话列表里的「秘书」会话中，
-      // 这里只保留「收件箱快捷审批」与「时间线」两个辅助入口。
+      // 引导条：说明工作台职责 + 完整对话在会话列表。
       React.createElement('div', {
         style: {
           padding: '10px 20px', borderBottom: '1px solid var(--dsw-alias-border-l1)',
@@ -729,25 +986,33 @@ function SecretaryDeskPanel(props) {
         },
       },
         React.createElement('div', { style: { color: 'var(--dsw-alias-label-primary)', fontWeight: 600, marginBottom: '2px' } },
-          '💬 完整对话请打开「秘书 · @分身」会话'),
-        '秘书协调各群数字分身的请示/汇报：能定的直接回 worker，需拍板的上呈给你。这里是快捷审批入口——待批事项点「批准/交付/拒绝」，完整消息流与回复请到会话列表打开秘书会话。'),
-      tab === 'timeline'
+          '👁 主人监控窗口：分身们正在干什么 / 有什么等你拍板'),
+        '任务 = 各房间正在处理的事（忙/待交付/请示中）；待批 = 分身向你请示/汇报的事项，点「批准/交付/拒绝」放行；时间线 = 分身自己的行动记录。完整对话流请到会话列表打开对应房间 / 秘书会话。'),
+      tab === 'tasks'
         ? React.createElement('div', { style: { flex: 1, overflowY: 'auto', padding: '16px 20px' } },
-            React.createElement(TimelineTab, { ctx }))
-        : React.createElement('div', { style: { flex: 1, overflowY: 'auto', padding: '16px 20px' } },
-            React.createElement(OwnerInboxTab, { ctx })))
+            React.createElement(TaskBoardTab, { ctx }))
+        : tab === 'inbox'
+          ? React.createElement('div', { style: { flex: 1, overflowY: 'auto', padding: '16px 20px' } },
+              React.createElement(OwnerInboxTab, { ctx }))
+          : React.createElement('div', { style: { flex: 1, overflowY: 'auto', padding: '16px 20px' } },
+              React.createElement(TimelineTab, { ctx })))
   )
 }
 
-/** 插件入口：注册设置页 + 秘书工作台。 */
+/** 插件入口：注册设置页 + 分身工作台（全局 + 会话头部两入口）。 */
 export function apply(ctx) {
   ctx.slots.inject('settings.section', () => ctx.slots.register(
     { name: 'settings.section', id: 'dsh-matrix', order: 30, label: () => '数字分身' },
     (props) => React.createElement(MatrixSettingsPage, Object.assign({ ctx }, props)),
   ))
-  // 秘书工作台：会话头部快捷入口（右上角工具位），打开面板（收件箱/时间线）。
+  // 分身工作台：侧栏底部全局入口（设置按钮旁），任何页面都能打开（任务看板/收件箱/时间线）。
+  ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register(
+    { name: 'sidebar.footer.action', id: 'twin-desk', order: 20, label: () => '分身工作台' },
+    (props) => React.createElement(TwinDeskButton, Object.assign({ ctx, wide: true }, props)),
+  ))
+  // 分身工作台：会话头部快捷入口（右上角工具位），打开同一面板（保留旧入口习惯）。
   ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register(
-    { name: 'conversation.session.header.utilities', id: 'secretary-desk', order: 30, label: () => '秘书工作台' },
-    (props) => React.createElement(SecretaryDeskButton, Object.assign({ ctx, wide: true }, props)),
+    { name: 'conversation.session.header.utilities', id: 'secretary-desk', order: 30, label: () => '分身工作台' },
+    (props) => React.createElement(TwinDeskButton, Object.assign({ ctx, wide: true }, props)),
   ))
 }

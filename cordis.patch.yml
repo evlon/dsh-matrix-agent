@@ -27,7 +27,8 @@
         allowAllUsers: true
         provider: 'codebuddy'
         model: 'deepseek-v4-flash'
-        # room agent 挂载的岗位 preset：pm = 产品经理数字员工（见 @evlon/dsh-job-presets）。
+        # room agent 挂载的岗位 preset：pm = 产品经理数字员工（见各 dsh-job-<job> 独立岗位仓，
+        # 如 @evlon/dsh-job-pm；本地开发用 E:\ai-works\dsh-jobs\<job> junction 集合 + job_install 落盘）。
         # 岗位 preset 提供 persona（人设+秘书工作流）+ skill 加载能力；通道工具由 host 全局注册。
         agentPreset: 'pm'
         chunkMaxChars: 4000

@@ -95,6 +95,7 @@ export function apply(ctx: Context, config: MatrixConfig): void {
       digitalTwins: twins,
       updateTimelineSnapshot: settingsHandle.updateTimelineSnapshot,
       updateOwnerInbox: settingsHandle.updateOwnerInbox,
+      updateTaskBoard: settingsHandle.updateTaskBoard,
       onTimelineOpsHandled: settingsHandle.clearTimelineOps,
       onOwnerDecisionOpsHandled: settingsHandle.clearOwnerDecisionOps,
     })
