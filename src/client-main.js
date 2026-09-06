@@ -11,7 +11,7 @@
  * - 社交：自我介绍 / 成员记忆 / 打招呼 / 测试房间前缀
  * - 兜底话术：正则兜底 ack 文案（AI 接待关闭/失败时用）
  *
- * 运行时工作台（第二入口「分身工作台」sidebar.footer.action）：
+ * 运行时工作台「分身工作台」（会话头部右上角入口 conversation.session.header.utilities）：
  * - 任务：各房间当前忙/待交付/请示中状态（taskBoard 镜像）
  * - 收件箱：主人待批请示/汇报（ownerInbox 镜像 + ownerDecisionOps 决策）
  * - 时间线：自我记忆查看/筛选/删除/清空（timelineSnapshot + timelineOps）
@@ -625,18 +625,75 @@ function timelineKindLabel(kind) {
 }
 
 /** 「时间线」tab：查看/筛选/删除/清空自己的跨房间记忆（仅元数据，无原文）。 */
+/** 把明细条目按「任务活动段」聚合成概要：同 roomId+actor 且时间间隙 ≤ 10 分钟的连续条目并成一段（倒序，最新段在前）。 */
+function groupTimelineMilestones(entries) {
+  const sorted = entries.slice().sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0))
+  const groups = []
+  for (const e of sorted) {
+    const key = (e.roomId ?? '') + '|' + (e.actor ?? 'worker')
+    let g = groups[groups.length - 1]
+    if (g === undefined || g.key !== key || (e.ts !== undefined && g.newest !== undefined && g.newest - e.ts > 10 * 60 * 1000)) {
+      g = { key, roomId: e.roomId ?? '', actor: e.actor ?? 'worker', newest: e.ts ?? 0, oldest: e.ts ?? 0, items: [] }
+      groups.push(g)
+    }
+    if (e.ts !== undefined) {
+      if (g.newest === 0 || e.ts > g.newest) g.newest = e.ts
+      if (g.oldest === 0 || e.ts < g.oldest) g.oldest = e.ts
+    }
+    g.items.push(e)
+  }
+  return groups
+}
+
+/** 段摘要文案：回复 X · 审批 Y · 主动 Z · 工具 W · 自我介绍 S。 */
+function groupSummary(group) {
+  const count = {}
+  for (const e of group.items) count[e.kind ?? 'reply'] = (count[e.kind ?? 'reply'] ?? 0) + 1
+  const parts = []
+  for (const k of ['reply', 'approval', 'proactive', 'tool-call', 'self-intro', 'task']) {
+    if (count[k] > 0) parts.push(timelineKindLabel(k) + ' ' + count[k])
+  }
+  return parts.join(' · ') || ('共 ' + group.items.length + ' 条')
+}
+
+/** 单条详情的展示文本（excerpt 优先；否则元数据）。 */
+function entryDetailText(e) {
+  const excerpt = e.excerpt !== undefined && e.excerpt !== '' ? e.excerpt : ''
+  if (excerpt !== '') return excerpt
+  if (e.tool !== undefined) return '工具: ' + e.tool
+  if (e.target !== undefined && e.target !== '') return '对象: ' + e.target
+  if (e.charCount !== undefined) return '长度: ' + e.charCount + ' 字'
+  return ''
+}
+
+/** 单条详情的时间 + 对象短标。 */
+function entryMetaText(e) {
+  const parts = []
+  const when = e.ts ? new Date(e.ts).toLocaleString('zh-CN', { hour12: false }) : ''
+  if (when !== '') parts.push(when)
+  if (e.target !== undefined && e.target !== '') {
+    const t = e.target.startsWith('@') ? e.target.slice(1, e.target.indexOf(':') > 0 ? e.target.indexOf(':') : undefined) : e.target
+    parts.push('→ ' + t)
+  }
+  return parts.join(' · ')
+}
+
+/** 「分身工作台 → 时间线」：按任务活动段聚合的里程碑列表（默认展示详情），支持搜索/筛选。 */
 function TimelineTab(props) {
   const ctx = props.ctx
   const { scope, snapshot } = useTimelineSnapshot(ctx)
   const entries = (snapshot !== undefined && Array.isArray(snapshot.entries)) ? snapshot.entries : []
-  const [filter, setFilter] = React.useState('all')
-  const [roomFilter, setRoomFilter] = React.useState('')
+  const [q, setQ] = React.useState('')
   const [actorFilter, setActorFilter] = React.useState('all')
 
-  const visible = entries.filter((e) =>
-    (filter === 'all' || e.kind === filter) &&
-    (actorFilter === 'all' || (e.actor ?? 'worker') === actorFilter) &&
-    (roomFilter === '' || (e.roomId ?? '').includes(roomFilter)))
+  const kw = q.trim().toLowerCase()
+  const visible = entries.filter((e) => {
+    if (actorFilter !== 'all' && (e.actor ?? 'worker') !== actorFilter) return false
+    if (kw === '') return true
+    const hay = [e.excerpt ?? '', e.target ?? '', e.tool ?? '', e.kind ?? '', e.roomId ?? ''].join(' ').toLowerCase()
+    return hay.includes(kw)
+  })
+  const groups = groupTimelineMilestones(visible)
 
   const removeEntry = (id) => {
     if (scope === undefined) return
@@ -646,17 +703,18 @@ function TimelineTab(props) {
     if (scope === undefined) return
     scope.set('timelineOps', { clearSeq: Date.now() }).catch(() => {})
   }
+  const fmtRoom = (roomId) => (roomId !== undefined && roomId.length > 24 ? roomId.slice(0, 24) + '…' : (roomId ?? '?'))
 
   return React.createElement('div', null,
     React.createElement('p', { style: HINT_STYLE },
-      '这里是「自己的记忆」：你在各群里说过什么（回复次数）、调用过什么工具、主动发过什么消息、完成过什么任务（仅结构化元数据，不含聊天原文）。用于检查分身做了什么，为迭代更新提供依据。'),
+      '分身行动的里程碑记录：按「任务活动段」分组（同房间连续动作并成一段），直接展示分身发过的内容摘要（同事消息原文不落盘）。'),
     React.createElement('div', { style: { display: 'flex', gap: '6px', marginBottom: '8px', flexWrap: 'wrap', alignItems: 'center' } },
-      React.createElement('select', {
-        style: Object.assign({}, INPUT_STYLE, { width: 'auto' }),
-        value: filter,
-        onChange: (e) => setFilter(e.target.value),
-      }, ['all', 'reply', 'tool-call', 'proactive', 'self-intro', 'approval', 'task'].map((k) =>
-        React.createElement('option', { key: k, value: k }, k === 'all' ? '全部类型' : timelineKindLabel(k)))),
+      React.createElement('input', {
+        style: Object.assign({}, INPUT_STYLE, { width: '200px' }),
+        placeholder: '🔍 搜索内容/对象/类型…',
+        value: q,
+        onChange: (e) => setQ(e.target.value),
+      }),
       React.createElement('select', {
         style: Object.assign({}, INPUT_STYLE, { width: 'auto' }),
         value: actorFilter,
@@ -666,48 +724,54 @@ function TimelineTab(props) {
         { value: 'secretary', label: '秘书动作' },
         { value: 'worker', label: '干活动作' },
       ].map((o) => React.createElement('option', { key: o.value, value: o.value }, o.label))),
-      React.createElement('input', {
-        style: Object.assign({}, INPUT_STYLE, { width: '160px' }),
-        placeholder: '按房间过滤…',
-        value: roomFilter,
-        onChange: (e) => setRoomFilter(e.target.value),
-      }),
+      React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', marginLeft: 'auto' } },
+        groups.length + ' 组 · ' + visible.length + ' 条'),
       React.createElement('button', {
         style: { ...SMALL_BTN, background: 'var(--dsw-alias-state-error-primary)', color: 'var(--dsw-alias-bg-base)' },
         onClick: clearAll,
       }, '清空全部')),
     snapshot === undefined
       ? React.createElement('p', { style: HINT_STYLE }, '时间线加载中…')
-      : visible.length === 0
-        ? React.createElement('p', { style: HINT_STYLE }, '暂无时间线记录。分身回复/调用工具后会出现在这里。')
+      : groups.length === 0
+        ? React.createElement('p', { style: HINT_STYLE }, kw !== '' ? '无匹配记录。' : '暂无里程碑记录。分身收到任务/回复/请示后会出现在这里。')
         : React.createElement('div', { style: { border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px' } },
-            visible.map((e) => {
-              const when = e.ts ? new Date(e.ts).toLocaleString('zh-CN', { hour12: false }) : ''
-              const meta = e.tool !== undefined ? '工具: ' + e.tool
-                : e.target !== undefined ? '目标: ' + e.target
-                : e.charCount !== undefined ? '长度: ' + e.charCount + ' 字'
-                : ''
-              const actorLabel = e.actor === 'secretary' ? '秘书' : '干活'
+            groups.map((g) => {
+              const actorLabel = g.actor === 'secretary' ? '秘书' : '干活'
+              const whenStart = g.newest ? new Date(g.newest).toLocaleString('zh-CN', { hour12: false }) : ''
+              const whenOld = g.oldest && g.oldest !== g.newest ? new Date(g.oldest).toLocaleString('zh-CN', { hour12: false }) : ''
               return React.createElement('div', {
-                key: e.id,
-                style: {
-                  display: 'flex', alignItems: 'flex-start', gap: '8px',
-                  padding: '8px', borderBottom: '1px solid var(--dsw-alias-border-l1)',
-                },
+                key: g.key + '@' + g.newest,
+                style: { borderBottom: '1px solid var(--dsw-alias-border-l1)' },
               },
-                React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap', marginTop: '1px' } },
-                  timelineKindLabel(e.kind) + '·' + actorLabel),
-                React.createElement('div', { style: { flex: 1, minWidth: 0 } },
-                  React.createElement('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)' } },
-                    '房间 ' + (e.roomId !== undefined && e.roomId.length > 20 ? e.roomId.slice(0, 20) + '…' : (e.roomId ?? '')) +
-                    (meta !== '' ? ' · ' + meta : '')),
-                  React.createElement('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', marginTop: '2px' } }, when)),
-                React.createElement('button', {
-                  style: { ...SMALL_BTN, background: 'transparent', border: '1px solid var(--dsw-alias-border-l1)', color: 'var(--dsw-alias-label-secondary)' },
-                  onClick: () => removeEntry(e.id),
-                }, '删除'))
+                React.createElement('div', {
+                  style: { display: 'flex', alignItems: 'baseline', gap: '10px', padding: '8px 12px', background: 'var(--dsw-alias-bg-layer-0)' },
+                },
+                  React.createElement('span', { style: { fontSize: '12px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)', whiteSpace: 'nowrap' } },
+                    actorLabel + ' · ' + fmtRoom(g.roomId)),
+                  React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, groupSummary(g)),
+                  React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginLeft: 'auto', whiteSpace: 'nowrap' } },
+                    whenStart + (whenOld !== '' ? ' ~ ' + whenOld : ''))),
+                React.createElement('div', { style: { padding: '2px 12px 6px' } },
+                  g.items.map((e) => {
+                    const text = entryDetailText(e)
+                    const meta = entryMetaText(e)
+                    return React.createElement('div', {
+                      key: e.id,
+                      style: { display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '5px 0', borderBottom: '1px dashed var(--dsw-alias-border-l1)' },
+                    },
+                      React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'nowrap', marginTop: '2px', minWidth: '36px' } },
+                        timelineKindLabel(e.kind)),
+                      React.createElement('span', { style: { flex: 1, fontSize: '12px', color: 'var(--dsw-alias-label-primary)', minWidth: 0, overflowWrap: 'break-word', lineHeight: '18px' } },
+                        text !== '' ? text : '（无内容记录）'),
+                      React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'nowrap', marginTop: '2px' } }, meta),
+                      React.createElement('button', {
+                        style: { ...SMALL_BTN, background: 'transparent', border: '1px solid var(--dsw-alias-border-l1)', color: 'var(--dsw-alias-label-secondary)' },
+                        onClick: () => removeEntry(e.id),
+                      }, '删除'))
+                  })))
             })))
 }
+
 
 /** 通用小按钮样式。 */
 const SMALL_BTN = {
@@ -999,18 +1063,13 @@ function TwinDeskPanel(props) {
   )
 }
 
-/** 插件入口：注册设置页 + 分身工作台（全局 + 会话头部两入口）。 */
+/** 插件入口：注册设置页 + 分身工作台（会话头部入口）。 */
 export function apply(ctx) {
   ctx.slots.inject('settings.section', () => ctx.slots.register(
     { name: 'settings.section', id: 'dsh-matrix', order: 30, label: () => '数字分身' },
     (props) => React.createElement(MatrixSettingsPage, Object.assign({ ctx }, props)),
   ))
-  // 分身工作台：侧栏底部全局入口（设置按钮旁），任何页面都能打开（任务看板/收件箱/时间线）。
-  ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register(
-    { name: 'sidebar.footer.action', id: 'twin-desk', order: 20, label: () => '分身工作台' },
-    (props) => React.createElement(TwinDeskButton, Object.assign({ ctx, wide: true }, props)),
-  ))
-  // 分身工作台：会话头部快捷入口（右上角工具位），打开同一面板（保留旧入口习惯）。
+  // 分身工作台：会话头部快捷入口（右上角工具位），打开面板（任务看板/收件箱/时间线）。
   ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register(
     { name: 'conversation.session.header.utilities', id: 'secretary-desk', order: 30, label: () => '分身工作台' },
     (props) => React.createElement(TwinDeskButton, Object.assign({ ctx, wide: true }, props)),
