@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import test from 'node:test'
 import { MatrixBridge } from '@evlon/dsh-bridge'
 import { resolveStateDir } from '@evlon/dsh-bridge'
@@ -162,7 +162,10 @@ test('resolveStateDir: 相对路径锚定 DSH_HOME，绝对路径原样返回，
     process.env.DSH_HOME = 'C:/home/dev'
     assert.equal(resolveStateDir('.dsh-matrix'), join('C:/home/dev', '.dsh-matrix'))
     assert.equal(resolveStateDir('foo/bar'), join('C:/home/dev', 'foo/bar'))
-    assert.equal(resolveStateDir('C:/abs/path'), 'C:/abs/path')
+    // 绝对路径断言需平台相关：Windows 用 C:/ 盘符路径，POSIX 用 / 根路径
+    // （node:path isAbsolute 按平台判定，C:/abs/path 在 Linux 上不是绝对路径）。
+    const absPath = isAbsolute('/abs/path') ? '/abs/path' : 'C:/abs/path'
+    assert.equal(resolveStateDir(absPath), absPath)
     assert.equal(resolveStateDir(''), join('C:/home/dev', '.dsh-matrix'))
   } finally {
     if (prev === undefined) delete process.env.DSH_HOME
