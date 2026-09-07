@@ -38,7 +38,7 @@
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.1",
-    "@evlon/dsh-bridge": "^0.1.0",
+    "@evlon/dsh-bridge": "^0.1.1",
     "@evlon/dsh-channel-core": "^0.1.0",
     "@evlon/dsh-channel-matrix": "^0.1.0",
     "@evlon/dsh-tools-channel": "^0.1.0"
