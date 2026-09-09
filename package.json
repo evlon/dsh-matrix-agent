@@ -63,6 +63,7 @@
     "@deepseek-ai/schemastery": "^3.18.2",
     "@types/node": "^24.0.0",
     "esbuild": "^0.28.2",
+    "semver": "^7.6.0",
     "typescript": "^5.9.0"
   }
 }
