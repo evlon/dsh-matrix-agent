@@ -77,12 +77,12 @@ jobs:
           rm -f package.json.new
           # 重装解析到新 rc；再构建+测试
           pnpm install --no-frozen-lockfile || { echo "INSTALL_FAIL"; exit 90; }
-          # 构建
-          if npm pkg get scripts.build >/dev/null 2>&1 && [ "$(npm pkg get scripts.build | tr -d '\"')" != "undefined" ]; then
+          # 构建（所有候选仓都有 build 脚本）
+          if node -e "process.exit(require('./package.json').scripts?.build ? 0 : 1)"; then
             pnpm build || { echo "BUILD_FAIL"; exit 91; }
           fi
           # 测试（有 test 脚本才跑）
-          if npm pkg get scripts.test >/dev/null 2>&1 && [ "$(npm pkg get scripts.test | tr -d '\"')" != "undefined" ]; then
+          if node -e "process.exit(require('./package.json').scripts?.test ? 0 : 1)"; then
             pnpm test || { echo "TEST_FAIL"; exit 92; }
           fi
           echo "MECHANICAL_OK"
@@ -116,19 +116,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           NEXT="${{ steps.check.outputs.next }}"
-          EXIT="${{ steps.sync.outcome }}"
           # 去重：已存在同标题 open issue 则不重复开
           EXISTING=$(gh issue list --state open --search "auto-sync dsh rc $NEXT" --json number -q '.[0].number' 2>/dev/null || true)
           if [ -n "$EXISTING" ]; then
             echo "issue already open: #$EXISTING"
-          else
-            gh issue create --title "auto-sync dsh rc $NEXT 失败：需人工适配/依赖未就绪" --body \
-"每日同步脚本尝试把 dsh-* peer/dev 范围升到 \`$NEXT\`，但 \`pnpm install\`/\`build\`/\`test\` 未通过（构建输出见本 workflow run log）。
-
-可能原因：
-- 依赖的 @evlon 包（若本插件组合了它们）尚未发布对齐到 \`$NEXT\` 的 peer 范围 → 需先发它们的对齐版；
-- dsh $NEXT 有 API 破坏，需要改源码适配；
-- 其它环境问题。
-
-请人工处理；处理后手动重跑本 workflow（workflow_dispatch）确认。"
+            exit 0
           fi
+          # 用 heredoc（未加引号 → $NEXT 展开）。正文不用反引号，避免 bash 命令替换转义问题。
+          cat > /tmp/issue-body.md <<EOF
+          每日同步脚本尝试把 dsh-* peer/dev 范围升到 [$NEXT]，但 pnpm install / build / test 未通过（构建输出见本次 workflow run log）。
+
+          可能原因：
+          - 本插件组合了其它 @evlon 包且它们尚未发布对齐到 [$NEXT] 的 peer 范围，需先发布它们的对齐版；
+          - dsh [$NEXT] 有 API 破坏，需要改源码适配；
+          - 其它环境/依赖问题。
+
+          请人工处理后手动重跑本 workflow（workflow_dispatch）确认。
+          EOF
+          gh issue create --title "auto-sync dsh rc $NEXT 失败：需人工适配/依赖未就绪" --body-file /tmp/issue-body.md
