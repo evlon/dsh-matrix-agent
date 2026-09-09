@@ -46,6 +46,10 @@ jobs:
         with:
           version: 9
 
+      - name: Install dependencies
+        # sync-check 需要 semver（devDependency），先按 lockfile 装好再跑检测。
+        run: pnpm install --frozen-lockfile
+
       - name: Run sync-check (detect dsh rc lag)
         id: check
         shell: bash
