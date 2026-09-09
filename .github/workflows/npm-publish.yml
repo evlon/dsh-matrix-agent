@@ -37,7 +37,7 @@ jobs:
           fetch-depth: 0 # 需要 tag 历史生成 changelog
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v5
         with:
           version: 9
 
