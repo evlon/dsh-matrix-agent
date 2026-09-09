@@ -176,8 +176,8 @@ test('multi-account + owner auth: twin approval, auth commands, routing', async 
     // 1) 群聊必须 @提及 才响应：主账号被 @ 后响应；用 !! 立即提交，避免 5s 合并窗口拖慢测试
     hs.deliver([textEvent('$m1', '@bot-main 你好!!')])
     await waitFor(() => captured.messages.length === 1, 'main responds')
-    // 注入格式：群聊标签 + 当前消息（已剥 @提及）；群聊历史已改由工具按需获取
-    assert.match(captured.messages[0].content[0].text, /^\[群聊「数智化部全员群」，你是@bot-main\]\n你好$/)
+    // 注入格式：群聊标签 + 「来自 @sender」注记 + 当前消息（已剥 @提及）；群聊历史已改由工具按需获取
+    assert.match(captured.messages[0].content[0].text, /^\[群聊「数智化部全员群」，你是@bot-main\]\n（来自 @alice）你好$/)
     captured.messages.length = 0
 
     // 1.5) 会话标题 = Matrix 房间名（rename 被调用且标题正确）

@@ -210,7 +210,8 @@ test('bridge end-to-end: merge, assistant delivery, approval, commands, dedup, s
     await waitFor(() => captured.messages.length === 1)
     const merged = captured.messages[0]
     // 群聊上下文标签 + 当前消息（合并后已剥离 @bot 前缀）；群聊历史已改由工具按需获取。
-    assert.match(merged.content[0].text, /^\[群聊「测试群」，约3人，你是@bot\]\n你好\n世界$/)
+    // bridge 0.2.x 起在房间标签后注一行「来自 @sender」（身份审计），正文为 senderNote+剥离 @ 后的消息。
+    assert.match(merged.content[0].text, /^\[群聊「测试群」，约3人，你是@bot\]\n（来自 @alice）你好\n世界$/)
     assert.equal(merged.source.kind, 'user')
     assert.equal(merged.source.sender, SENDER)
     const agentId = captured.agents[0].agent.id
@@ -235,7 +236,8 @@ test('bridge end-to-end: merge, assistant delivery, approval, commands, dedup, s
     hs.deliver([textEvent('$e3', 'bot: 你好!!')])
     await waitFor(() => captured.messages.length === 2)
     const mentioned = captured.messages[1]
-    assert.match(mentioned.content[0].text, /\n你好$/)
+    // bridge 0.2.x：房间标签 + 「来自 @sender」注记 + 剥离提及前缀后的正文。
+    assert.match(mentioned.content[0].text, /\n（来自 @alice）你好$/)
 
     // 4) 审批
     const req = { agent: { id: agentId }, toolName: 'bash', reason: '跑命令', signal: undefined }
@@ -294,7 +296,8 @@ test('respondToAll 门控：true 响应群聊所有消息，false 只响应 @ �
     hs.deliver([textEvent('$r2', '@bot 你好!!')])
     await new Promise((resolve) => setTimeout(resolve, 400))
     assert.equal(captured.messages.length, 1, '@ 自己的消息应被投递到 agent')
-    assert.match(captured.messages[0].content[0].text, /\n你好$/)
+    // bridge 0.2.x：房间标签 + 「来自 @sender」注记 + 剥离 @ 后的正文。
+    assert.match(captured.messages[0].content[0].text, /\n（来自 @alice）你好$/)
   } finally {
     if (bridge) await bridge.stop()
     await rm(dir, { recursive: true, force: true })

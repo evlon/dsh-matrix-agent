@@ -37,10 +37,10 @@
     }
   },
   "dependencies": {
-    "@evlon/dsh-bridge": "^0.1.1",
+    "@evlon/dsh-bridge": "^0.2.0",
     "@evlon/dsh-channel-core": "^0.1.0",
     "@evlon/dsh-channel-matrix": "^0.1.0",
-    "@evlon/dsh-tools-channel": "^0.1.0"
+    "@evlon/dsh-tools-channel": "^0.1.1"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",

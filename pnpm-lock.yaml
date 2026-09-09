@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@evlon/dsh-bridge':
-        specifier: ^0.1.1
-        version: 0.1.2(mp2xk74aij3z5azbhghnx6c4c4)
+        specifier: ^0.2.0
+        version: 0.2.1(mp2xk74aij3z5azbhghnx6c4c4)
       '@evlon/dsh-channel-core':
         specifier: ^0.1.0
         version: 0.1.0
@@ -18,8 +18,8 @@ importers:
         specifier: ^0.1.0
         version: 0.1.0
       '@evlon/dsh-tools-channel':
-        specifier: ^0.1.0
-        version: 0.1.0(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-llm@0.1.2-rc.1(@deepseek-ai/cordis@4.0.2))(@deepseek-ai/dsh-tools@0.1.2-rc.1(2u3bc2bpxljj4zgxyhu2pjq4my))
+        specifier: ^0.1.1
+        version: 0.1.1(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-llm@0.1.2-rc.1(@deepseek-ai/cordis@4.0.2))(@deepseek-ai/dsh-tools@0.1.2-rc.1(2u3bc2bpxljj4zgxyhu2pjq4my))
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.2
@@ -340,17 +340,17 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@evlon/dsh-bridge@0.1.2':
-    resolution: {integrity: sha512-FFxHTCSIuEN1QRh2z5EHoEBXroLCKB+gZWIXdrqnuTz33woY25ZWvfMKo2CADqHPXod+6RyH+6M4Jn2sxDHfFA==}
+  '@evlon/dsh-bridge@0.2.1':
+    resolution: {integrity: sha512-0tiDfrE8M+iDhxX3GmwRhGhiKSUhzabb46sG0AxXxjJI5UoADhjR7XcA2tYCNl7Pg6QOR2jYy4PfRDwkzGU2lg==}
     peerDependencies:
-      '@deepseek-ai/cordis': ^4.0.1
-      '@deepseek-ai/dsh-agent': ^0.1.1-rc.2
-      '@deepseek-ai/dsh-attachment': ^0.1.1-rc.2
-      '@deepseek-ai/dsh-llm': ^0.1.1-rc.2
-      '@deepseek-ai/dsh-session': ^0.1.1-rc.2
-      '@deepseek-ai/dsh-tools': ^0.1.1-rc.2
-      '@deepseek-ai/dsh-user-approval': ^0.1.1-rc.2
-      '@deepseek-ai/schemastery': ^3.18.1
+      '@deepseek-ai/cordis': ^4.0.2
+      '@deepseek-ai/dsh-agent': ^0.1.2-rc.1
+      '@deepseek-ai/dsh-attachment': ^0.1.2-rc.1
+      '@deepseek-ai/dsh-llm': ^0.1.2-rc.1
+      '@deepseek-ai/dsh-session': ^0.1.2-rc.1
+      '@deepseek-ai/dsh-tools': ^0.1.2-rc.1
+      '@deepseek-ai/dsh-user-approval': ^0.1.2-rc.1
+      '@deepseek-ai/schemastery': ^3.18.2
 
   '@evlon/dsh-channel-core@0.1.0':
     resolution: {integrity: sha512-NCfbgZb3lh2e0rqQblrOIj/iCdnc0yOS44NoBJz8TNOJkEMqDLYhDelgVc8XoxOjbGgGUXXtEVg8XtA0inHIYA==}
@@ -358,12 +358,12 @@ packages:
   '@evlon/dsh-channel-matrix@0.1.0':
     resolution: {integrity: sha512-IbFPapf+k94c7bYg7ozyGL15Au06tBP1KB8vBy+S/f6oRxpQD2XcVxdDJ563KALklzd9mrReGqB2gyz+0NYSNQ==}
 
-  '@evlon/dsh-tools-channel@0.1.0':
-    resolution: {integrity: sha512-Io9xr/veLY1zJLUjLvF3J6dJ1ZSJOthsTt3RIZvkEMxMDSyNxkB4er6k4yX8afpGryiIoDm1IDLpcAMqNPHx8Q==}
+  '@evlon/dsh-tools-channel@0.1.1':
+    resolution: {integrity: sha512-A0KNJyg6ct36nTKKppIhLsTnpOXeZSVBpEH5IgX7bm8m9xRWz/EmmNKv174DyD9xfdZe2kBPmNpqxSqIk4IoEw==}
     peerDependencies:
-      '@deepseek-ai/cordis': ^4.0.1
-      '@deepseek-ai/dsh-llm': ^0.1.1-rc.2
-      '@deepseek-ai/dsh-tools': ^0.1.1-rc.2
+      '@deepseek-ai/cordis': ^4.0.2
+      '@deepseek-ai/dsh-llm': ^0.1.2-rc.1
+      '@deepseek-ai/dsh-tools': ^0.1.2-rc.1
 
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
@@ -589,7 +589,7 @@ snapshots:
   '@esbuild/win32-x64@0.28.2':
     optional: true
 
-  '@evlon/dsh-bridge@0.1.2(mp2xk74aij3z5azbhghnx6c4c4)':
+  '@evlon/dsh-bridge@0.2.1(mp2xk74aij3z5azbhghnx6c4c4)':
     dependencies:
       '@deepseek-ai/cordis': 4.0.2
       '@deepseek-ai/dsh-agent': 0.1.2-rc.1(zdhw5fi55oqjbehz7i6kphspjy)
@@ -601,7 +601,7 @@ snapshots:
       '@deepseek-ai/schemastery': 3.18.2
       '@evlon/dsh-channel-core': 0.1.0
       '@evlon/dsh-channel-matrix': 0.1.0
-      '@evlon/dsh-tools-channel': 0.1.0(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-llm@0.1.2-rc.1(@deepseek-ai/cordis@4.0.2))(@deepseek-ai/dsh-tools@0.1.2-rc.1(2u3bc2bpxljj4zgxyhu2pjq4my))
+      '@evlon/dsh-tools-channel': 0.1.1(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-llm@0.1.2-rc.1(@deepseek-ai/cordis@4.0.2))(@deepseek-ai/dsh-tools@0.1.2-rc.1(2u3bc2bpxljj4zgxyhu2pjq4my))
 
   '@evlon/dsh-channel-core@0.1.0': {}
 
@@ -609,7 +609,7 @@ snapshots:
     dependencies:
       '@evlon/dsh-channel-core': 0.1.0
 
-  '@evlon/dsh-tools-channel@0.1.0(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-llm@0.1.2-rc.1(@deepseek-ai/cordis@4.0.2))(@deepseek-ai/dsh-tools@0.1.2-rc.1(2u3bc2bpxljj4zgxyhu2pjq4my))':
+  '@evlon/dsh-tools-channel@0.1.1(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-llm@0.1.2-rc.1(@deepseek-ai/cordis@4.0.2))(@deepseek-ai/dsh-tools@0.1.2-rc.1(2u3bc2bpxljj4zgxyhu2pjq4my))':
     dependencies:
       '@deepseek-ai/cordis': 4.0.2
       '@deepseek-ai/dsh-llm': 0.1.2-rc.1(@deepseek-ai/cordis@4.0.2)
