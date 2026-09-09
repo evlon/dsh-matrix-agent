@@ -23,6 +23,27 @@ src/
 > 开发期经 `E:\ai-works\dsh-jobs\<job>` junction 集合 + `dsh-dev-job-install`（dev_job_install 工具）落盘到 DSH_HOME；
 > 跨岗位通用沟通规范在 `communication` 技能（随 dsh-dev-job-install 自带，安装任意岗位时一并落盘）。
 
+## DeepSeek Harness 版本适配
+
+本插件链接 DeepSeek Harness（DSH）宿主运行时的以下包（作为 `peerDependencies`，由宿主进程提供，安装时请确保宿主版本在范围内）：
+
+| 宿主包 | 适配的版本范围 |
+|---|---|
+| `@deepseek-ai/cordis` | `^4.0.2` |
+| `@deepseek-ai/dsh-agent` | `^0.1.2-rc.1` |
+| `@deepseek-ai/dsh-attachment` | `^0.1.2-rc.1` |
+| `@deepseek-ai/dsh-llm` | `^0.1.2-rc.1` |
+| `@deepseek-ai/dsh-session` | `^0.1.2-rc.1` |
+| `@deepseek-ai/dsh-tools` | `^0.1.2-rc.1` |
+| `@deepseek-ai/dsh-user-approval` | `^0.1.2-rc.1` |
+| `@deepseek-ai/schemastery` | `^3.18.2` |
+
+本包同时依赖（`dependencies`，非宿主提供）：`@evlon/dsh-bridge`（当前 ^0.1.1）、`@evlon/dsh-channel-core` / `@evlon/dsh-channel-matrix` / `@evlon/dsh-tools-channel`（^0.1.0）。
+
+> **注意**：DSH 以 `rc` 预发布版本按日推进，而 npm 对预发布版本的范围匹配是**按 `major.minor.patch` 元组锚定**的——`^0.1.2-rc.1` 只会匹配 `0.1.2.*` 的预发布，不会自动覆盖后续新出的 `0.1.3-rc.x`/`0.1.4-…`。因此**宿主升到下一个 rc 元组时，本插件需同步把 peer/dev 范围升到对应 rc 并重新构建测试**（源码兼容则发 patch；有 API 破坏则需适配后发版）。本版本号对应上面的适配范围；宿主若超出该范围（或为 `alpha` 不稳定快照）可能导致 peer 冲突或行为异常，请在升级宿主前先升级本插件。
+
+> **alpha 说明**：`0.1.5-alpha.1` 等 `alpha` 为不稳定快照，非官方发布通道，**未按此适配**，仅记录/可尝试使用，出现问题优先反馈。
+
 ## 架构
 
 ### 整体拓扑：每个分身一个 harness 进程
