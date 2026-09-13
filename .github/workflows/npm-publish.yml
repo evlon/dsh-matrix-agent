@@ -9,6 +9,18 @@
 # 需要名为 `NPM_TOKEN` 的仓库 secret：
 #   npm token create                     （生成 automation token）
 #   -> Settings > Secrets and variables > Actions > New repository secret: NPM_TOKEN
+
+# ⚠️⚠️ 发布后必须额外推内网 registry（CI 做不到，因为 runner 在公网）
+#
+# 内网 registry.ict.cmcc（Verdaccio 6.2.1）**不自动同步上游** ——
+# 实测 is-odd / left-pad / lodash 全部 404，只有被手动推过的包才在。
+# 所以本 workflow 发到官方 npm 后，同事**仍然拿不到**，必须手动推一次：
+#
+#   bash k8s/scripts/publish-internal.sh <包名>
+#   bash k8s/scripts/publish-internal.sh --check    # 盘点哪些包落后
+#   bash k8s/scripts/publish-internal.sh --all      # 一键推所有落后包
+#
+# 验证：curl -s http://registry.ict.cmcc/<包名> | grep -o '"latest":"[^"]*"'
 name: Publish to npm
 
 on:
