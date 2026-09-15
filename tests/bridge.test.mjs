@@ -213,7 +213,9 @@ test('bridge end-to-end: merge, assistant delivery, approval, commands, dedup, s
     // bridge 0.2.x 起在房间标签后注一行「来自 @sender」（身份审计），正文为 senderNote+剥离 @ 后的消息。
     assert.match(merged.content[0].text, /^\[群聊「测试群」，约3人，你是@bot\]\n（来自 @alice）你好\n世界$/)
     assert.equal(merged.source.kind, 'user')
-    assert.equal(merged.source.sender, SENDER)
+    // bridge 0.2.2 起 source 只允许 { kind:'user' }（DSH 0.1.5-rc.1 严格会话格式校验，
+    // 多写 sender 会导致会话迁移失败）。派活人身份在正文「（来自 @alice）」注记里，source 不冗余携带。
+    assert.equal(merged.source.sender, undefined)
     const agentId = captured.agents[0].agent.id
 
     // 2) 出站：markdown 子集 HTML
