@@ -69,6 +69,11 @@ jobs:
       - name: Test
         run: pnpm test
 
+      # 防「叶子包更新但顶层默认装旧版」：断言所有 @evlon/dsh-* 依赖的已发布 latest
+      # 仍被本包 semver 范围覆盖；不覆盖 → CI 失败，逼作者先 bump 顶层范围。
+      - name: Check @evlon/dsh-* leaf coverage
+        run: node scripts/evlon-leaf-check.mjs
+
       - name: Resolve version
         id: version
         shell: bash
