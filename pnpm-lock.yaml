@@ -9,14 +9,14 @@ importers:
   .:
     dependencies:
       '@evlon/dsh-bridge':
-        specifier: ^0.2.3
-        version: 0.2.3(4dba414998fc61d68b7c99dee9f53da1)
+        specifier: ^0.2.5
+        version: 0.2.5(4dba414998fc61d68b7c99dee9f53da1)
       '@evlon/dsh-channel-core':
-        specifier: ^0.1.0
-        version: 0.1.0
+        specifier: ^0.1.1
+        version: 0.1.1
       '@evlon/dsh-channel-matrix':
-        specifier: ^0.1.0
-        version: 0.1.0
+        specifier: ^0.1.1
+        version: 0.1.1
       '@evlon/dsh-tools-channel':
         specifier: ^0.1.3
         version: 0.1.3(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-llm@0.1.5-rc.2(@deepseek-ai/cordis@4.0.2))(@deepseek-ai/dsh-tools@0.1.5-rc.2(7f9e302786cf21e030eafe960666842c))
@@ -344,8 +344,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@evlon/dsh-bridge@0.2.3':
-    resolution: {integrity: sha512-hCLjAIQvX0PEADP9SM/Iu3VjCKdokyit2T5NH0C8JNMZihrVC3W/b0YAT7hKxjpKKEzqnOTe8IQ3y3eENi8nUg==}
+  '@evlon/dsh-bridge@0.2.5':
+    resolution: {integrity: sha512-ek2k9MCpCfN2Mxd1EEVtlJlzUZncidt3z8LGDHuArJUdF5Rx0Q47kVTzUayhJTHt4w2nCt4y/rg0HVSXBxS55A==}
     peerDependencies:
       '@deepseek-ai/cordis': ^4.0.2
       '@deepseek-ai/dsh-agent': ^0.1.5-rc.2
@@ -359,15 +359,11 @@ packages:
   '@evlon/dsh-channel-core@0.1.0':
     resolution: {integrity: sha512-NCfbgZb3lh2e0rqQblrOIj/iCdnc0yOS44NoBJz8TNOJkEMqDLYhDelgVc8XoxOjbGgGUXXtEVg8XtA0inHIYA==}
 
-  '@evlon/dsh-channel-matrix@0.1.0':
-    resolution: {integrity: sha512-IbFPapf+k94c7bYg7ozyGL15Au06tBP1KB8vBy+S/f6oRxpQD2XcVxdDJ563KALklzd9mrReGqB2gyz+0NYSNQ==}
+  '@evlon/dsh-channel-core@0.1.1':
+    resolution: {integrity: sha512-ppF/8wUI8oA4Wznf7zzhsQoQ29xPdMVXlvOc6gdQOdmCeaoqN+/iJrmb+bw4655DWUMSdRHxV9hGEtLCl+vvIQ==}
 
-  '@evlon/dsh-tools-channel@0.1.1':
-    resolution: {integrity: sha512-A0KNJyg6ct36nTKKppIhLsTnpOXeZSVBpEH5IgX7bm8m9xRWz/EmmNKv174DyD9xfdZe2kBPmNpqxSqIk4IoEw==}
-    peerDependencies:
-      '@deepseek-ai/cordis': ^4.0.2
-      '@deepseek-ai/dsh-llm': ^0.1.2-rc.1
-      '@deepseek-ai/dsh-tools': ^0.1.2-rc.1
+  '@evlon/dsh-channel-matrix@0.1.1':
+    resolution: {integrity: sha512-xmLmsNczIfbyw/X5yrl4LXe2MTk6zQF2VL6obMKPjMu4Xq8sCZ9f/vWc0HWAhfGjp2Aje1L0jkqJhJgFhF+Rtw==}
 
   '@evlon/dsh-tools-channel@0.1.3':
     resolution: {integrity: sha512-bLJ45BhlXxaYOsPV3Bo6Zi2/GeKFpBYb51gD6uW02X0TMfprWDmy4EbUfp9BU5qLPz5uneSYPltp1HobTvcLZw==}
@@ -606,7 +602,7 @@ snapshots:
   '@esbuild/win32-x64@0.28.2':
     optional: true
 
-  '@evlon/dsh-bridge@0.2.3(4dba414998fc61d68b7c99dee9f53da1)':
+  '@evlon/dsh-bridge@0.2.5(4dba414998fc61d68b7c99dee9f53da1)':
     dependencies:
       '@deepseek-ai/cordis': 4.0.2
       '@deepseek-ai/dsh-agent': 0.1.5-rc.2(6df6622855b87cb7fde1fe609a6d039a)
@@ -616,22 +612,17 @@ snapshots:
       '@deepseek-ai/dsh-tools': 0.1.5-rc.2(7f9e302786cf21e030eafe960666842c)
       '@deepseek-ai/dsh-user-approval': 0.1.5-rc.2(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-agent@0.1.5-rc.2(6df6622855b87cb7fde1fe609a6d039a))(@deepseek-ai/dsh-brand@0.1.5-rc.2(@deepseek-ai/cordis@4.0.2))(@deepseek-ai/dsh-invariants@0.1.5-rc.2(@deepseek-ai/cordis@4.0.2))(@deepseek-ai/dsh-llm@0.1.5-rc.2(@deepseek-ai/cordis@4.0.2))(@deepseek-ai/dsh-scope@0.1.5-rc.2(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-invariants@0.1.5-rc.2(@deepseek-ai/cordis@4.0.2)))(@deepseek-ai/dsh-session@0.1.5-rc.2(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-scope@0.1.5-rc.2(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-invariants@0.1.5-rc.2(@deepseek-ai/cordis@4.0.2))))(@deepseek-ai/dsh-system-prompt@0.1.5-rc.2(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-invariants@0.1.5-rc.2(@deepseek-ai/cordis@4.0.2))(@deepseek-ai/dsh-llm@0.1.5-rc.2(@deepseek-ai/cordis@4.0.2))(@deepseek-ai/dsh-scope@0.1.5-rc.2(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-invariants@0.1.5-rc.2(@deepseek-ai/cordis@4.0.2))))
       '@deepseek-ai/schemastery': 3.18.2
-      '@evlon/dsh-channel-core': 0.1.0
-      '@evlon/dsh-channel-matrix': 0.1.0
-      '@evlon/dsh-tools-channel': 0.1.1(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-llm@0.1.5-rc.2(@deepseek-ai/cordis@4.0.2))(@deepseek-ai/dsh-tools@0.1.5-rc.2(7f9e302786cf21e030eafe960666842c))
+      '@evlon/dsh-channel-core': 0.1.1
+      '@evlon/dsh-channel-matrix': 0.1.1
+      '@evlon/dsh-tools-channel': 0.1.3(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-llm@0.1.5-rc.2(@deepseek-ai/cordis@4.0.2))(@deepseek-ai/dsh-tools@0.1.5-rc.2(7f9e302786cf21e030eafe960666842c))
 
   '@evlon/dsh-channel-core@0.1.0': {}
 
-  '@evlon/dsh-channel-matrix@0.1.0':
-    dependencies:
-      '@evlon/dsh-channel-core': 0.1.0
+  '@evlon/dsh-channel-core@0.1.1': {}
 
-  '@evlon/dsh-tools-channel@0.1.1(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-llm@0.1.5-rc.2(@deepseek-ai/cordis@4.0.2))(@deepseek-ai/dsh-tools@0.1.5-rc.2(7f9e302786cf21e030eafe960666842c))':
+  '@evlon/dsh-channel-matrix@0.1.1':
     dependencies:
-      '@deepseek-ai/cordis': 4.0.2
-      '@deepseek-ai/dsh-llm': 0.1.5-rc.2(@deepseek-ai/cordis@4.0.2)
-      '@deepseek-ai/dsh-tools': 0.1.5-rc.2(7f9e302786cf21e030eafe960666842c)
-      '@evlon/dsh-channel-core': 0.1.0
+      '@evlon/dsh-channel-core': 0.1.1
 
   '@evlon/dsh-tools-channel@0.1.3(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-llm@0.1.5-rc.2(@deepseek-ai/cordis@4.0.2))(@deepseek-ai/dsh-tools@0.1.5-rc.2(7f9e302786cf21e030eafe960666842c))':
     dependencies:
