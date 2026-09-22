@@ -26,10 +26,13 @@
  *   `execFileSync(..., { stdio: 'inherit' })` 调用不 spawn 服务进程，本地与 CI
  *   都能跑。因此本脚本通过 `resolveEsbuildBinary()` 定位原生二进制并走 CLI。
  */
-import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync, statSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
+
+const require = createRequire(import.meta.url)
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const entry = join(root, 'src', 'client-main.js')
@@ -56,63 +59,70 @@ const FOOTER = `    return module.exports;
 /**
  * 定位 esbuild 原生二进制（跨平台、跨包管理器健壮）。
  *
- * 平台二进制是独立包 `@esbuild/<os>-<arch>`，其根目录直接放 `esbuild(.exe)`
- * （无 bin 字段）。pnpm 把它实体化到 `node_modules/.pnpm/@esbuild+<os>-<arch>@<ver>/...`，
- * npm/yarn 则放到 `node_modules/@esbuild/<os>-<arch>/`。故用文件系统扫描而非
- * require.resolve（后者在 pnpm 严格布局下解析不到顶层不可见平台包）。
+ * 完全沿用 esbuild 官方 install.js 的定位逻辑（node-platform.ts）：
+ *   - Windows: `@esbuild/<os>-<arch>/esbuild.exe`（平台包根目录）
+ *   - Unix:    `@esbuild/<os>-<arch>/bin/esbuild`（平台包 bin 子目录）
+ * 用 `require.resolve(pkg/subpath)` 解析（能正确穿透 pnpm 的 .pnpm 软链与
+ * npm/yarn 的顶层 node_modules），比手扫目录树更可靠。
+ *
+ * 兜底：esbuild 安装失败时会自行下载二进制到
+ * `<esbuild-lib>/downloaded-<pkg>-<basename>`（install.js 的 downloadedBinPath），
+ * 这里同样尝试，确保 `--no-optional` 场景也能构建。
  */
 function resolveEsbuildBinary() {
-  const binName = process.platform === 'win32' ? 'esbuild.exe' : 'esbuild'
-  const arch = { x64: 'x64', arm64: 'arm64', ia32: 'ia32' }[process.arch] || process.arch
-  const wantedPkg = `@esbuild/${process.platform}-${arch}`
-
-  // 候选根目录：pnpm 的 .pnpm 实体目录 与 顶层 node_modules/@esbuild
-  const roots = []
-  const pnpmDir = join(root, 'node_modules', '.pnpm')
-  if (existsSync(pnpmDir)) {
-    let entries = []
-    try {
-      entries = readdirSync(pnpmDir)
-    } catch { /* ignore */ }
-    for (const e of entries) {
-      // 形如 @esbuild+win32-x64@0.28.2 → 实体目录 .../node_modules/@esbuild/win32-x64
-      if (!e.startsWith('@esbuild+')) continue
-      const inner = join(pnpmDir, e, 'node_modules', '@esbuild')
-      if (!existsSync(inner)) continue
-      let subs = []
-      try {
-        subs = readdirSync(inner)
-      } catch { /* ignore */ }
-      for (const s of subs) {
-        // 精确匹配当前平台包（排除其他 os/arch 的平台包）
-        if (s === `${process.platform}-${arch}`) roots.push(join(inner, s))
-      }
-    }
+  const { arch, platform } = process
+  const knownWindows = {
+    'win32 arm64': '@esbuild/win32-arm64',
+    'win32 ia32': '@esbuild/win32-ia32',
+    'win32 x64': '@esbuild/win32-x64',
   }
-  // 顶层 node_modules/@esbuild/<os>-<arch>（npm/yarn 布局）
-  const topLevel = join(root, 'node_modules', '@esbuild')
-  if (existsSync(topLevel)) {
-    let subs = []
-    try { subs = readdirSync(topLevel) } catch { /* ignore */ }
-    for (const s of subs) {
-      if (s === `${process.platform}-${arch}`) roots.push(join(topLevel, s))
-    }
+  const knownUnix = {
+    'linux x64': '@esbuild/linux-x64',
+    'linux arm64': '@esbuild/linux-arm64',
+    'darwin x64': '@esbuild/darwin-x64',
+    'darwin arm64': '@esbuild/darwin-arm64',
+    'freebsd x64': '@esbuild/freebsd-x64',
+    'freebsd arm64': '@esbuild/freebsd-arm64',
+    'openbsd x64': '@esbuild/openbsd-x64',
+    'openbsd arm64': '@esbuild/openbsd-arm64',
+    'sunos x64': '@esbuild/sunos-x64',
+    'android arm64': '@esbuild/android-arm64',
+  }
+  const key = `${platform} ${arch}`
+  let pkg, subpath
+  if (knownWindows[key]) {
+    pkg = knownWindows[key]
+    subpath = 'esbuild.exe'
+  } else if (knownUnix[key]) {
+    pkg = knownUnix[key]
+    subpath = 'bin/esbuild'
+  } else {
+    throw new Error(`[build-client] 不支持的平台: ${key}`)
   }
 
-  const seen = new Set()
-  for (const r of roots) {
-    const bin = join(r, binName)
-    const key = bin.toLowerCase()
-    if (seen.has(key)) continue
-    seen.add(key)
-    try {
-      const st = statSync(bin)
-      if (st.isFile()) return bin
-    } catch { /* 不存在，继续 */ }
-  }
+  // ① 官方主路径：从 esbuild 主包目录出发 resolve 平台包
+  //    （pnpm 把 @esbuild/<platform> 软链在 esbuild 主包同级的 @esbuild/ 下，
+  //    顶层 node_modules 不可见，故必须带 paths 起点）
+  try {
+    const esbuildMain = require.resolve('esbuild')
+    const esbuildPkgDir = dirname(dirname(esbuildMain))
+    return require.resolve(`${pkg}/${subpath}`, { paths: [esbuildPkgDir] })
+  } catch { /* 继续兜底 */ }
+
+  // ② 兜底：顶层可直接解析（npm/yarn 布局）
+  try {
+    return require.resolve(`${pkg}/${subpath}`)
+  } catch { /* 继续兜底 */ }
+
+  // ③ 兜底：esbuild 自行下载到 lib/downloaded-<pkg>-<basename>
+  try {
+    const esbuildLibDir = dirname(require.resolve('esbuild/package.json'))
+    const downloaded = join(esbuildLibDir, `downloaded-${pkg.replace('/', '-')}-${subpath.split('/').pop()}`)
+    if (readFileSync(downloaded).length > 0) return downloaded
+  } catch { /* 继续 */ }
 
   throw new Error(
-    `[build-client] esbuild 原生二进制未找到（期望 ${wantedPkg}）。请先 \`pnpm install\` 确保平台包已安装。`
+    `[build-client] esbuild 原生二进制未找到（期望 ${pkg}/${subpath}）。请先 \`pnpm install\` 确保平台包已安装。`
   )
 }
 
