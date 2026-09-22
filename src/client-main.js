@@ -908,9 +908,9 @@ function OwnerInboxTab(props) {
   return React.createElement('div', null,
     items.length === 0
       ? React.createElement('p', { style: HINT_STYLE },
-          '收件箱为空。分身向你请示/汇报后，待批事项会出现在这里，点「批准/交付」即可放行。')
+          '收件箱为空。分身向你请示/汇报、或收到入群邀请时，待批事项会出现在这里，点「批准/交付/同意进群」即可放行。')
       : items.map((it) => {
-          const kindLabel = it.kind === 'clarify' ? '🤔 请示' : '📤 汇报'
+          const kindLabel = it.kind === 'clarify' ? '🤔 请示' : (it.kind === 'invite' ? '📨 入群邀请' : '📤 汇报')
           const when = it.createdAt ? new Date(it.createdAt).toLocaleString('zh-CN', { hour12: false }) : ''
           return React.createElement('div', {
             key: it.id,
@@ -929,7 +929,7 @@ function OwnerInboxTab(props) {
               React.createElement('button', {
                 style: { ...SMALL_BTN, background: 'var(--dsw-alias-state-success-primary)', color: 'var(--dsw-alias-bg-base)', padding: '6px 14px', fontSize: '13px' },
                 onClick: () => decide(it.id, 'approve'),
-              }, it.kind === 'clarify' ? '✅ 批准开工' : '✅ 交付'),
+              }, it.kind === 'clarify' ? '✅ 批准开工' : (it.kind === 'invite' ? '✅ 同意进群' : '✅ 交付')),
               React.createElement('button', {
                 style: { ...SMALL_BTN, background: 'var(--dsw-alias-state-error-primary)', color: 'var(--dsw-alias-bg-base)', padding: '6px 14px', fontSize: '13px' },
                 onClick: () => decide(it.id, 'reject'),
@@ -1051,7 +1051,7 @@ function TwinDeskPanel(props) {
       },
         React.createElement('div', { style: { color: 'var(--dsw-alias-label-primary)', fontWeight: 600, marginBottom: '2px' } },
           '👁 主人监控窗口：分身们正在干什么 / 有什么等你拍板'),
-        '任务 = 各房间正在处理的事（忙/待交付/请示中）；待批 = 分身向你请示/汇报的事项，点「批准/交付/拒绝」放行；时间线 = 分身自己的行动记录。完整对话流请到会话列表打开对应房间 / 秘书会话。'),
+        '任务 = 各房间正在处理的事（忙/待交付/请示中）；待批 = 分身向你请示/汇报、以及入群邀请，点「批准/交付/同意进群/拒绝」放行；时间线 = 分身自己的行动记录。完整对话流请到会话列表打开对应房间 / 秘书会话。'),
       tab === 'tasks'
         ? React.createElement('div', { style: { flex: 1, overflowY: 'auto', padding: '16px 20px' } },
             React.createElement(TaskBoardTab, { ctx }))

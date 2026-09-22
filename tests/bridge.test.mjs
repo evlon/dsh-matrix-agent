@@ -19,7 +19,7 @@ const ROOM_ID = '!room:hs.example'
 const USER_ID = '@bot:hs.example'
 const SENDER = '@alice:hs.example'
 
-function fakeHomeserver() {
+function fakeHomeserver(options = {}) {
   const sends = []
   const queues = new Map()     // acct -> events[]
   const waiters = new Map()    // acct -> wake()
@@ -58,8 +58,9 @@ function fakeHomeserver() {
         return { ok: true, status: 200, async json() { return { event_id: '$out' } } }
       }
       if (path.includes('/joined_members')) {
-        // 3 人房间（>2 即群聊），用于验证上下文标签的人数渲染。
-        return { ok: true, status: 200, async json() { return { joined: { '@a:hs': {}, '@b:hs': {}, '@bot:hs': {} } } } }
+        // 默认 3 人房间（>2 即群聊），用于验证上下文标签的人数渲染。
+        // options.joinedMembers 可覆盖：传 2 人即 1:1 私聊房（isDirectRoom 判定 count<=2）。
+        return { ok: true, status: 200, async json() { return { joined: options.joinedMembers ?? { '@a:hs': {}, '@b:hs': {}, '@bot:hs': {} } } } }
       }
       if (path.includes('/state/m.room.name')) {
         return { ok: true, status: 200, async json() { return { name: '测试群' } } }
@@ -1039,3 +1040,90 @@ test('bridge: inbound edit marked + preserveRichText=false strips context', asyn
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 私聊房出站投递（A 方案·治本回归）：
+//   数字分身（有 owner）在群里 assistant/message 是内心独白，不自动发群；
+//   但私聊房听众只有主人一人，必须直接投递——否则主人私聊分身「等半天没反应」
+//   （实测：agentPreset=standard 时模型不知道要调 matrix_send_room_message）。
+// ─────────────────────────────────────────────────────────────────────────────
+const DM_OWNER = '@owner:hs.example'
+
+test('DM 房：数字分身的 assistant/message 必须直接投递给主人（治本回归）', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-matrix-dm-deliver-'))
+  let bridge
+  try {
+    // 私聊房：owner 发消息 → shouldRespond 走 dm-branch（并缓存 isDm=true）。
+    const hs = fakeHomeserver({ joinedMembers: { '@bot:hs.example': {}, [DM_OWNER]: {} } })
+    const { ctx, captured } = makeCtx()
+    bridge = new MatrixBridge(ctx, {
+      homeserverUrl: 'https://hs.example', accessToken: 'token', userId: USER_ID,
+      owner: DM_OWNER, allowedUserIds: [DM_OWNER], allowAllUsers: false,
+      provider: 'deepseek-official', model: 'deepseek-v4-flash',
+      chunkMaxChars: 4000, mergeTimeoutSecs: 1, approvalTimeoutSecs: 60, stateDir: dir,
+      fetchFn: hs.fetch, sleep: async () => {}, respondToAll: false, matrixTools: true,
+    })
+    const startPromise = bridge.start()
+    hs.deliver([])
+    await startPromise
+
+    // owner 在私聊房说话（fakeHomeserver 固定把事件投到 ROOM_ID，DM 判定按 joined_members=2 人为真）。
+    // sender 必须是 owner——非白名单发送者会被 authorized() 门控拦掉。
+    hs.deliver([{ type: 'm.room.message', sender: DM_OWNER, event_id: '$dm1', content: { msgtype: 'm.text', body: '你好，在吗!!' } }])
+    await waitFor(() => captured.messages.length >= 1)
+    const agentId = captured.agents[0].agent.id
+    const before = hs.sends.length
+
+    // 分身产出 assistant/message（没有调任何 matrix_* 工具）。
+    captured.sessionHandler({ id: agentId }, {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'text', text: '我在，主人有什么吩咐？' }] } },
+    })
+
+    // 关键断言：必须被投递出去（旧行为是 owner 存在 → 直接吞掉 → 主人空等）。
+    await waitFor(() => hs.sends.slice(before).some((s) => String(s.body.body).includes('我在，主人有什么吩咐')))
+  } finally {
+    if (bridge) await bridge.stop()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('群聊房：数字分身的 assistant/message 仍不自动发群（分层红线不回归）', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-matrix-group-silent-'))
+  let bridge
+  try {
+    // 默认 3 人房间 → isDirectRoom=false → 群聊。
+    const hs = fakeHomeserver()
+    const { ctx, captured } = makeCtx()
+    bridge = new MatrixBridge(ctx, {
+      homeserverUrl: 'https://hs.example', accessToken: 'token', userId: USER_ID,
+      owner: DM_OWNER, allowedUserIds: [DM_OWNER, SENDER], allowAllUsers: false,
+      provider: 'deepseek-official', model: 'deepseek-v4-flash',
+      chunkMaxChars: 4000, mergeTimeoutSecs: 1, approvalTimeoutSecs: 60, stateDir: dir,
+      fetchFn: hs.fetch, sleep: async () => {}, respondToAll: true, matrixTools: true,
+    })
+    const startPromise = bridge.start()
+    hs.deliver([])
+    await startPromise
+
+    hs.deliver([textEvent('$g1', '大家好!!')])
+    await waitFor(() => captured.messages.length >= 1)
+    const agentId = captured.agents[0].agent.id
+    const before = hs.sends.length
+
+    captured.sessionHandler({ id: agentId }, {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'text', text: '这是我的内心独白，不该出现在群里' }] } },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    assert.equal(
+      hs.sends.slice(before).filter((s) => String(s.body.body).includes('内心独白')).length,
+      0,
+      '❌ 群聊房绝不能自动投递 assistant/message（交付红线）',
+    )
+  } finally {
+    if (bridge) await bridge.stop()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+

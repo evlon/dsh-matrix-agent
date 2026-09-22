@@ -128,18 +128,19 @@ src/
 - **信息完整（类人处理）**：`preserveRichText`（默认开）时入站消息信息不丢失——**图文混排**保留文字说明（caption，修复旧版丢 caption bug）、**富文本**（`formatted_body` 的链接/加粗/代码块/列表）注入结构注记、**回复引用**（`m.in_reply_to`）注入被回复原消息上下文、**编辑**（`m.replace`）标记为最新版并在聊天记录里去重替换；设为 `false` 回退纯文本旧行为
 - **17 个 Matrix 工具**（经 `ctx.tools.register` 注册，模型可见且可直接执行）：成员/消息/房间/用户查询、主动发送、媒体下载、自我时间线、工作目录/工作区文件、请示/汇报/秘书回传、**澄清提问**（详情见下方「Matrix 工具」）
 - **主动消息**：agent 可主动私聊、向房间发消息、@成员（`matrix_send_dm`/`send_room_message`/`mention_member`）；首用经 Owner 审批记忆授权（`proactiveSendRequiresApproval`），或配置关闭直接允许
-- **房间事件**：入群/离群/邀请/改名换头像/房间名/主题变化经 `onRoomEvent` 投影，`notifyRoomEvents` 开启后注入 agent 会话（供主动打招呼等）
+- **房间事件**：入群/离群/邀请/改名换头像/房间名/主题变化经 `onRoomEvent` 投影，`notifyRoomEvents` 开启后注入 agent 会话（供主动打招呼等）。注意 `invite`（已加入房间里**别人**被邀请）与 `self-invite`（**自己**被拉进新房间）语义不同，后者是入群审批入口
 - **DSH → Matrix**：监听 `session/event`，把 `assistant/message` 的可见文本分段（前缀 `（i/n）` 参与长度收敛）后以 `org.matrix.custom.html` 发回；`turn/start` 显示 typing
 - **数字分身架构**：**每个分身一个 harness 进程**——`userId` 即分身账号（bot 自己登录），`owner` 是真实人账号（仅在 Matrix 客户端登录）。分身与真人同事、其他分身在同一房间协作；@提及路由、私聊判定、多账号协调（可选 `digitalTwins` 同进程跑多分身）均已支持
 - **三级授权**：
   - **L1 记忆授权**：非红线工具此前被批准过 → 静默放行（`auth-store.json` 持久化）
   - **L2 即时确认**：房间推送审批，配置了 `owner` 的账号**仅 Owner** 可应答，批准后写入记忆授权库
   - **L3 红线强制**：命中 `redlineTools`（默认 `bash`/`pwsh`/`write`/`edit`）→ **每次都必须确认**，批准永不入库
-- **命令**：`/help` `/status` `/new` `/clear` `/bind <session-id>` `/auth list` `/auth revoke <tool>` `/auth revoke-all` `/memory` `/forget <userId>`
+- **命令**：`/help` `/status` `/new` `/clear` `/bind <session-id>` `/auth list` `/auth revoke <tool>` `/auth revoke-all` `/memory` `/forget <userId>` `/invites` `/invite-allow <userId>` `/invite-deny <userId>` `/invite-forget <userId>`
 - **数字分身灵魂**：`soul.*` 配置（性格/风格/口头禅/习惯）经 `agentSetup` 注入每个 room agent 的 system prompt（section `twin:soul`，仅 Matrix 会话生效，不污染 GUI）；行为统计（回复数/工具调用/活跃时间）按 `matrix-` 前缀 session 聚合，分身可调用 `twin_soul_status` 工具读取自身人设与统计
 - **社交记忆**：分身被邀请入群后按 `selfIntroTemplate` 主动 @ 成员自我介绍（上限 `maxSelfIntroMentions`）；`memberMemory` 开启时记住每个房间里见过的成员（含其他数字人），`/memory` 查看、`/forget <userId>` 忘记；`autoGreet` 开启时新成员入群会提示 agent 主动打招呼了解对方
+- **入群邀请审批（默认开，安全优先）**：收到邀请**不自动进群**——邀请人已在批准名单则直接进群；否则**落盘待决 + 请示主人**（收件箱「📨 入群邀请」+ 私聊）。主人批准即进群并**记住该邀请人**（以后 TA 邀请直接进，不再打扰）；拒绝则退群并记住（以后 TA 的邀请直接静默拒绝）。命令：`/invites`（查看待批与名单）、`/invite-allow` / `/invite-deny` / `/invite-forget <userId>`（仅 Owner）。⚠️ **待决邀请必须落盘**——Matrix 的未处理邀请**只投递一次**，sync 游标一推进就永久消失，靠 sync 重放等主人答复是不可能的。配置：`inviteApprovalEnabled`（`false` 回退旧行为，仅可信测试环境）、`inviteApprovalTimeoutSecs`（`0`=一直等主人）、`inviteApprovalTimeoutAction`（超时处置，默认 `reject`）。详见 [`docs/invite-approval.md`](docs/invite-approval.md)
 - **DSH Web 设置界面（单入口 + 标签页）**：Client 半注册一个「数字分身」设置页（`settings.section` `dsh-matrix`），内部三个标签页——**Matrix 账号**（连接/模型路由/白名单）、**社交**（自我介绍/成员记忆/打招呼/测试房间前缀）、**时间线**（自我记忆查看/筛选/删除/清空）。配置统一持久化到 `dsh-matrix` settings namespace（连接类字段需重启生效）。可选项尽量用下拉：`provider`/`model` 来自 dsh 运行时目录（`llm.providers`/`llm.models`），`agentPreset` 来自 `agentPresets.list`；**Owner 提供默认值提示**——分身账号为 `@ai-xxxxxx` 时提示默认主人 `@xxxxxx`（仅配置页辅助，运行期不推导，显式配置优先）。**岗位人设与秘书工作流不再在此注入**——由岗位 preset（`agentPreset` 指向各 `@evlon/dsh-job-pm`/`dsh-job-dev`/`dsh-job-qa`/`dsh-job-leader`/`dsh-job-newbie`/`dsh-job-secretary` 独立仓，开发期经 `dsh-jobs` junction + `dsh-dev-job-install` 落盘）承载
-- **主人收件箱（DSH 侧待批列表 + 双通道决策）**：分身每次「请示/汇报」都会进入 `ownerInbox` 运行时镜像，秘书工作台「收件箱」tab 集中显示待批事项，主人点「✅ 批准开工/交付」或「🚫 拒绝」即写 `ownerDecisionOps` 命令回传。与 Matrix 私聊回复等价——两者都 resolve 同一个阻塞决策，让 agent 在**同一 turn 内**拿到结果继续发群。请示/汇报/决策同时沉淀到独立秘书会话（`matrix-<localpart>-secretary`，DSH 里可查看完整历史）
+- **主人收件箱（DSH 侧待批列表 + 双通道决策）**：分身每次「请示/汇报」都会进入 `ownerInbox` 运行时镜像，秘书工作台「收件箱」tab 集中显示待批事项，主人点「✅ 批准开工/交付」或「🚫 拒绝」即写 `ownerDecisionOps` 命令回传。与 Matrix 私聊回复等价——两者都 resolve 同一个阻塞决策，让 agent 在**同一 turn 内**拿到结果继续发群。请示/汇报/决策同时沉淀到独立秘书会话（`matrix-<localpart>-secretary`，DSH 里可查看完整历史）。**入群邀请**复用同一收件箱（`kind='invite'`，按钮「✅ 同意进群」），但**不唤醒任何会话**——邀请审批是通道事件驱动的非阻塞状态机，没有 agent turn 可挂起
 - **自我时间线（跨房间记忆，防脑裂）**：记录分身自己的出站动作——回复、工具调用、主动消息、自我介绍、审批、任务推送——到 `twin-timeline.jsonl`（**仅结构化元数据：kind/roomId/时间/工具名/长度/主体，不落盘任何聊天原文**，守住「聊天内容不落盘」红线）。**按主体分层**：`actor: secretary`（秘书的请示/确认/交付调度）vs `worker`（干活会话的执行回复/工具），`twin_timeline` 工具与时间线 UI 均可按主体筛选。**逐级暴露**：① 常驻 system prompt 段 `twin:memory`（恒定提示词，字节永不变化，不影响 KV 缓存命中率，仅告知"你有自我记忆可查"）；② 分身用 `twin_timeline` 工具查行动摘要；③ 细节用 `matrix_get_recent_messages` 现查对应房间。设置页「数字分身 → 时间线」tab 可查看/筛选（类型/主体/房间）/**删除单条/清空全部**（经 settings `timelineOps` 命令字段，Host 处理后清零）。配置：`timelineEnabled`（记录开关）、`timelineInject`（常驻提示词段开关）、`timelineCrossRoom`（跨房间共享门控，默认隔离）、`timelineCap`（内存上限）
 - **秘书编排（彻底分层）**：数字员工（有 owner）收到群任务时，agent 按岗位 skill 用原子工具自行完成「请示→读数据→整理→私发→等交付→发群」闭环：`matrix_request_owner_decision` 私下请示主人开工 → `matrix_set_room_cwd`/`matrix_list_workspace_files`/`matrix_read_workspace_file` 读真实数据整理 → `matrix_report_owner` 私下汇报完整结果等主人「交付」 → `matrix_send_room_message` 发群交付。bridge 只守两条红线：① 出站分流（assistant/message 内心独白吞掉，不自动发群）；② 交付授权门控（主人未回「交付」前 `matrix_send_room_message` 拒绝，防跳过请示直接发群；owner 未明确在场时 fail-closed）。**群里只见自然的人话 + 最终交付物，绝无「请示/待审/等老板」泄露**
 - **秘书工作台 UI**：入口——**会话头部右上角快捷入口**（`conversation.session.header.utilities`），带待批角标（收件箱待批数）。点击弹出**面板**，含两个 tab——**收件箱**（待批请示/汇报，点批准/交付/拒绝）、**时间线**（自我记忆，筛选/删除/清空）
@@ -252,6 +253,14 @@ allowBuilds:
 | `memberMemory` | `true` | 是否记住成员资料（join/profile/消息 upsert，落盘 `member-memory.json`） |
 | `autoGreet` | `true` | 新成员（含其他数字人）入群时是否提示 agent 主动打招呼了解对方 |
 | `selfIntroTemplate` | 模板 | 自我介绍模板；`{{userId}}`/`{{role}}`/`{{owner}}` 占位符可替换 |
+
+**入群邀请审批配置**：
+
+| 配置 | 默认 | 说明 |
+|---|---|---|
+| `inviteApprovalEnabled` | `true` | 收到邀请是否走审批（`false` = 无条件自动进群，仅可信测试环境）。⚠️ 关闭后任何人都能把分身拉进任意房间 |
+| `inviteApprovalTimeoutSecs` | `0` | 待决邀请请示超时秒数；**`0` = 一直保持待决**等主人（邀请已落盘，不会丢） |
+| `inviteApprovalTimeoutAction` | `'reject'` | 超时后处置：`reject` 自动拒绝（安全优先）/ `pending` 保持待决 |
 
 ### 配置示例
 
