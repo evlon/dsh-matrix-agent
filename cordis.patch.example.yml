@@ -24,8 +24,12 @@
         allowAllUsers: true
         provider: 'xxxxxx'
         model: 'deepseek-v4-flash'
-        # room agent 挂载的 agent preset：standard 提供完整工具（bash/pwsh/fs/…）。
-        # 缺失会导致 agent 无任何工具，模型只能把工具调用写成文本（无法真正执行）。
+        # room agent 挂载的 agent preset：决定工具集与角色提示。
+        # ⚠️ 不要用 'standard'——它会挂载 ask_user_question / plan-mode 两个「问人」工具，
+        #    无头（服务器无人值守）环境下这些工具会把问题推给 web answerer，而主人不在
+        #    电脑旁 → 请示到不了主人手机。数字分身应使用岗位 preset（如 pm/dev/qa），
+        #    岗位 preset 的问人走 matrix_request_owner_decision（DM 私聊主人，有超时兜底）。
+        #    详见 docs/审批问人走私聊.md。
         agentPreset: 'standard'
         chunkMaxChars: 4000
         mergeTimeoutSecs: 5
