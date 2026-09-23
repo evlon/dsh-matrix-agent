@@ -937,6 +937,83 @@ function OwnerInboxTab(props) {
         }))
 }
 
+/** 岗位管理：读 jobBoard 镜像，展示「默认岗位 + 已安装岗位 + 每房间岗位」，点切换写 jobSwitchOps 命令。 */
+function JobBoardTab(props) {
+  const ctx = props.ctx
+  const [scope] = React.useState(() => bindScope(ctx, MATRIX_NS))
+  const [board, setBoard] = React.useState(undefined)
+  React.useEffect(() => {
+    const update = () => {
+      const section = sectionOf(scope)
+      if (section !== undefined) {
+        setBoard(section.jobBoard !== undefined
+          ? section.jobBoard
+          : { defaultPresetId: 'standard', installedPresets: [], rows: [], updatedAt: 0 })
+      }
+    }
+    update()
+    if (scope !== undefined) return scope.subscribe(update)
+    return undefined
+  }, [scope])
+
+  const switchPreset = (roomId, presetId) => {
+    if (scope === undefined) return
+    scope.set('jobSwitchOps', { seq: Date.now(), roomId, presetId }).catch(() => {})
+  }
+
+  const b = board !== undefined ? board : { defaultPresetId: 'standard', installedPresets: [], rows: [] }
+  const presets = b.installedPresets ?? []
+  const rows = b.rows ?? []
+  const defaultId = b.defaultPresetId ?? 'standard'
+  const fmtRoom = (r) => (r.roomName !== undefined && r.roomName !== '' && r.roomName !== r.roomId)
+    ? r.roomName
+    : (r.roomId !== undefined && r.roomId.length > 28 ? r.roomId.slice(0, 28) + '…' : (r.roomId ?? '?'))
+
+  return React.createElement('div', null,
+    React.createElement('p', { style: HINT_STYLE },
+      '设置每个群用哪个岗位。默认岗位作用于未单独指定的群；切换已产出内容的群会新建会话并同步聊天记录。'),
+    // 默认岗位区
+    React.createElement('div', {
+      style: { padding: '12px', marginBottom: '12px', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-1)' },
+    },
+      React.createElement('div', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)', marginBottom: '6px' } },
+        '默认岗位（新群 / 未单独指定的群）'),
+      React.createElement('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginBottom: '8px' } },
+        '当前默认：' + defaultId + '。切换后，新创建的房间会话将使用新岗位。'),
+      React.createElement('select', {
+        value: defaultId,
+        onChange: (e) => switchPreset('', e.target.value),
+        style: INPUT_STYLE,
+      },
+        presets.map((p) => React.createElement('option', { key: p.id, value: p.id }, p.name + (p.id === defaultId ? '（当前）' : ''))))),
+    // 每房间岗位区
+    rows.length === 0
+      ? React.createElement('p', { style: HINT_STYLE }, '暂无已绑定房间。同事拉你进群并派活后，对应房间会出现在这里。')
+      : rows.map((r) => {
+          const pinned = r.pinned === true
+          return React.createElement('div', {
+            key: r.roomId,
+            style: {
+              display: 'flex', alignItems: 'center', gap: '10px',
+              padding: '10px 12px', marginBottom: '6px',
+              border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px',
+              background: 'var(--dsw-alias-bg-layer-1)',
+            },
+          },
+            React.createElement('div', { style: { flex: 1, minWidth: 0 } },
+              React.createElement('div', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } },
+                fmtRoom(r)),
+              React.createElement('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginTop: '2px' } },
+                (pinned ? '已单独指定' : '跟随默认') + (r.hasProduced ? ' · 已产出（切换将新建会话）' : ''))),
+            React.createElement('select', {
+              value: r.presetId,
+              onChange: (e) => switchPreset(r.roomId, e.target.value),
+              style: { ...INPUT_STYLE, minWidth: '140px' },
+            },
+              presets.map((p) => React.createElement('option', { key: p.id, value: p.id }, p.name + (p.id === r.presetId ? '（当前）' : '')))))
+        }))
+}
+
 /** 分身工作台入口按钮：带待批角标（收件箱待批数 + 任务看板活跃数）。 */
 function TwinDeskButton(props) {
   const ctx = props.ctx
@@ -997,6 +1074,7 @@ function TwinDeskPanel(props) {
   const tabs = [
     { id: 'tasks', label: '📋 任务' },
     { id: 'inbox', label: '✅ 待批' },
+    { id: 'jobs', label: '👔 岗位' },
     { id: 'timeline', label: '🕘 时间线' },
   ]
 
@@ -1058,8 +1136,11 @@ function TwinDeskPanel(props) {
         : tab === 'inbox'
           ? React.createElement('div', { style: { flex: 1, overflowY: 'auto', padding: '16px 20px' } },
               React.createElement(OwnerInboxTab, { ctx }))
-          : React.createElement('div', { style: { flex: 1, overflowY: 'auto', padding: '16px 20px' } },
-              React.createElement(TimelineTab, { ctx })))
+          : tab === 'jobs'
+            ? React.createElement('div', { style: { flex: 1, overflowY: 'auto', padding: '16px 20px' } },
+                React.createElement(JobBoardTab, { ctx }))
+            : React.createElement('div', { style: { flex: 1, overflowY: 'auto', padding: '16px 20px' } },
+                React.createElement(TimelineTab, { ctx })))
   )
 }
 

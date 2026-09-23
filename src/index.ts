@@ -24,7 +24,7 @@ import { MatrixBridge } from '@evlon/dsh-bridge'
 import type { Config as MatrixConfig, DigitalTwinAccount } from '@evlon/dsh-bridge'
 import { resolveStateDir } from '@evlon/dsh-bridge'
 import { registerMatrixSettings } from '@evlon/dsh-bridge'
-import type { TimelineOps, OwnerDecisionOps } from '@evlon/dsh-bridge'
+import type { TimelineOps, OwnerDecisionOps, JobSwitchOps } from '@evlon/dsh-bridge'
 
 // 向后兼容 re-export：把 @evlon/dsh-bridge 的桥接层/支撑类型面转发出去，
 // 保持 dsh-matrix-agent 旧 import 路径（如 `dsh-matrix-agent/bridge`）不破坏。
@@ -69,6 +69,9 @@ export function apply(ctx: Context, config: MatrixConfig): void {
     onOwnerDecisionOps: (ops: OwnerDecisionOps) => {
       bridgeRef?.handleOwnerDecisionOps(ops)
     },
+    onJobSwitchOps: (ops: JobSwitchOps) => {
+      void bridgeRef?.handleJobSwitchOps(ops)
+    },
     // 配置 live 变化（含 token 从缺到有）：驱动 bridge 动态启停，无需重启。
     onConfigChange: (merged: MatrixConfig) => {
       const tok = merged.accessToken === '' ? process.env.DSH_MATRIX_TOKEN : merged.accessToken
@@ -96,12 +99,17 @@ export function apply(ctx: Context, config: MatrixConfig): void {
       updateTimelineSnapshot: settingsHandle.updateTimelineSnapshot,
       updateOwnerInbox: settingsHandle.updateOwnerInbox,
       updateTaskBoard: settingsHandle.updateTaskBoard,
+      updateJobBoard: settingsHandle.updateJobBoard,
       onTimelineOpsHandled: settingsHandle.clearTimelineOps,
       onOwnerDecisionOpsHandled: settingsHandle.clearOwnerDecisionOps,
+      onJobSwitchOpsHandled: settingsHandle.clearJobSwitchOps,
     })
     bridgeRef = bridge
     bridgeDisposer = ctx.effect(() => {
-      void bridge.start()
+      void bridge.start().then(() => {
+        // bridge 就绪后立即发布一次岗位看板（已安装岗位 + 各房间岗位），供设置页首屏渲染。
+        void bridge.publishJobBoardSnapshot()
+      })
       return () => {
         void bridge.stop()
       }
