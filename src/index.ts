@@ -25,6 +25,7 @@ import type { Config as MatrixConfig, DigitalTwinAccount } from '@evlon/dsh-brid
 import { resolveStateDir } from '@evlon/dsh-bridge'
 import { registerMatrixSettings } from '@evlon/dsh-bridge'
 import type { TimelineOps, OwnerDecisionOps, JobSwitchOps } from '@evlon/dsh-bridge'
+import { createStateRoomResolver, firstRegistryWorkspace, registerSendFileTool } from './send-file.js'
 
 // 向后兼容 re-export：把 @evlon/dsh-bridge 的桥接层/支撑类型面转发出去，
 // 保持 dsh-matrix-agent 旧 import 路径（如 `dsh-matrix-agent/bridge`）不破坏。
@@ -105,12 +106,26 @@ export function apply(ctx: Context, config: MatrixConfig): void {
       onJobSwitchOpsHandled: settingsHandle.clearJobSwitchOps,
     })
     bridgeRef = bridge
+    // 出站附件工具：注册在插件层（不改通道/桥接包），随 bridge 生命周期启停。
+    // 房间解析走桥接持久化状态（state.json 的 roomSessions）；工作目录与 matrix_* 工具同源
+    // （会话 header cwd > workspaceRegistry 首个工作区 > 配置候选目录 > 进程 cwd）。
+    const disposeSendFileTool = registerSendFileTool(ctx, {
+      homeserverUrl: () => settingsHandle.getMerged().homeserverUrl ?? '',
+      accessToken: () => {
+        const current = settingsHandle.getMerged().accessToken
+        return current === '' ? process.env.DSH_MATRIX_TOKEN ?? '' : current
+      },
+      roomForSession: createStateRoomResolver(resolveStateDir(cfg.stateDir)),
+      fallbackCwd: () => firstRegistryWorkspace(ctx) ?? cfg.cwdCandidates?.[0],
+      log: (message, ...args) => ctx.logger.info('[dsh-matrix-agent] ' + message, ...args),
+    })
     bridgeDisposer = ctx.effect(() => {
       void bridge.start().then(() => {
         // bridge 就绪后立即发布一次岗位看板（已安装岗位 + 各房间岗位），供设置页首屏渲染。
         void bridge.publishJobBoardSnapshot()
       })
       return () => {
+        disposeSendFileTool()
         void bridge.stop()
       }
     }, 'matrix-agent.serve')

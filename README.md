@@ -124,9 +124,9 @@ src/
 ## 能力
 
 - **Matrix → DSH**：白名单用户文本经合并窗口（`..` 继续 / `!!` 立即提交 / 裸文本进合并窗口）后，通过 `agent.followup` 注入对应房间的 agent 会话；`/bind <session-id>` 可切换到已有会话
-- **媒体处理（图片/文件/音视频/位置）**：入站非文本消息自动下载（`mxc://` → `/media/v3/download`），保存到房间工作区 `.dsh-matrix/media`（或 `stateDir/media`）并附上本地路径；**图片额外持久化为多模态 `image` 内容块**，让模型直接看见——即使模型不支持视觉，harness 也会优雅降级为文本占位而非报错（避免旧版 `read_image` 工具不存在导致的 `unknown tool` 失败）；位置消息带坐标
+- **媒体处理（图片/文件/音视频/位置）**：入站非文本消息自动下载（`mxc://` → `/media/v3/download`），保存到房间工作区 `.dsh-matrix/media`（或 `stateDir/media`）并附上本地路径；**图片额外持久化为多模态 `image` 内容块**，让模型直接看见——即使模型不支持视觉，harness 也会优雅降级为文本占位而非报错（避免旧版 `read_image` 工具不存在导致的 `unknown tool` 失败）；位置消息带坐标。**出站**：`matrix_send_file` 用 `/_matrix/media/v3/upload`（上传）+ `m.room.message`（发送）把工作目录内的文档/图片/音视频发回房间，用户在聊天里直接可下载
 - **信息完整（类人处理）**：`preserveRichText`（默认开）时入站消息信息不丢失——**图文混排**保留文字说明（caption，修复旧版丢 caption bug）、**富文本**（`formatted_body` 的链接/加粗/代码块/列表）注入结构注记、**回复引用**（`m.in_reply_to`）注入被回复原消息上下文、**编辑**（`m.replace`）标记为最新版并在聊天记录里去重替换；设为 `false` 回退纯文本旧行为
-- **17 个 Matrix 工具**（经 `ctx.tools.register` 注册，模型可见且可直接执行）：成员/消息/房间/用户查询、主动发送、媒体下载、自我时间线、工作目录/工作区文件、请示/汇报/秘书回传、**澄清提问**（详情见下方「Matrix 工具」）
+- **18 个 Matrix 工具**（经 `ctx.tools.register` 注册，模型可见且可直接执行）：成员/消息/房间/用户查询、主动发送、媒体下载、**附件发送**、自我时间线、工作目录/工作区文件、请示/汇报/秘书回传、**澄清提问**（详情见下方「Matrix 工具」）
 - **主动消息**：agent 可主动私聊、向房间发消息、@成员（`matrix_send_dm`/`send_room_message`/`mention_member`）；首用经 Owner 审批记忆授权（`proactiveSendRequiresApproval`），或配置关闭直接允许
 - **房间事件**：入群/离群/邀请/改名换头像/房间名/主题变化经 `onRoomEvent` 投影，`notifyRoomEvents` 开启后注入 agent 会话（供主动打招呼等）。注意 `invite`（已加入房间里**别人**被邀请）与 `self-invite`（**自己**被拉进新房间）语义不同，后者是入群审批入口
 - **DSH → Matrix**：监听 `session/event`，把 `assistant/message` 的可见文本分段（前缀 `（i/n）` 参与长度收敛）后以 `org.matrix.custom.html` 发回；`turn/start` 显示 typing
@@ -148,7 +148,7 @@ src/
 
 ### Matrix 工具
 
-`matrixTools: true`（默认）时经 `ctx.tools.register` 注册以下 17 个工具，agent 既能看见 schema 也能直接调用执行体：
+`matrixTools: true`（默认）时经 `ctx.tools.register` 注册以下 18 个工具，agent 既能看见 schema 也能直接调用执行体：
 
 | 工具 | 说明 |
 |---|---|
@@ -161,6 +161,7 @@ src/
 | `matrix_mention_member` | 发消息并 @ 一个或多个成员（HTML `m.mention` 锚点 + `@名字` 文本兜底，校验目标都是房间成员；**受交付门禁**） |
 | `matrix_list_rooms` | 列出已加入房间及名称/成员数 |
 | `matrix_get_media` | 下载 Matrix 媒体（`mxc://`）为本地文件并返回路径，或返回 base64 |
+| `matrix_send_file` | 把工作目录内的文件作为附件发回房间（图片/音频/视频自动按媒体类型发送；限工作目录内，符号链接按真实路径判定，单文件上限 64 MiB） |
 | `twin_timeline` | 查自己的跨房间时间线（仅结构化元数据：回复/工具/主动消息/自我介绍/审批/任务），回忆自己在别处做过的事，防脑裂 |
 | `matrix_ask_requester` | **任务没说清楚时**，在群里 @ 派活的同事澄清需求（指哪个项目/范围/验收标准）。**不受交付门禁**——它只问需求、不交付成果；问「这事该怎么干」请改用 `matrix_request_owner_decision` |
 | `matrix_set_room_cwd` | 把房间绑定到工作目录（绝对路径，校验存在性） |
@@ -180,7 +181,7 @@ src/
 
 > `matrix_ask_requester` 刻意**不走交付门禁**：交付门禁保护「对外承诺产出」（结果/报告/结论）须 Owner 把关，而需求澄清只有派活人能答、Owner 无从代答——若也要求批准，疑问只能憋在内部（与 `communication` 技能红线冲突）。详见 `bridge.ts` `approveProactiveSend` 的 `clarify-exempt` 分支与 `tests/ask-requester-gate.selftest.mjs`。
 
-主动发送类工具（`matrix_send_dm`/`send_room_message`/`mention_member`）`isConcurrencySafe=false`（防并行重复发送），首用经 `proactiveSendRequiresApproval` 控制。
+主动发送类工具（`matrix_send_dm`/`send_room_message`/`mention_member`/`send_file`）`isConcurrencySafe=false`（防并行重复发送），首用经 `proactiveSendRequiresApproval` 控制。`matrix_send_file` 的目标房间默认取当前会话绑定房间（绑定关系读桥接状态 `state.json` 的 `roomSessions`），发送范围限定在工作目录内。
 
 ## 为什么通道层不用现成 SDK
 
@@ -233,7 +234,7 @@ allowBuilds:
 | `authStoreFile` | `auth-store.json` | 记忆授权库文件名（相对 `stateDir`） |
 | `redlineTools` | `['bash','pwsh','write','edit']` | 红线工具：即使有记忆授权也每次强制房间确认 |
 | `cwdCandidates` | `[进程 cwd]` | 新房间工作目录引导的候选目录列表；首项作为缺省 |
-| `matrixTools` | `true` | 是否注册 17 个 Matrix 工具（成员/消息/房间/用户查询、主动发送、媒体下载、自我时间线、工作目录/工作区文件、请示/汇报/秘书回传、澄清提问） |
+| `matrixTools` | `true` | 是否注册 18 个 Matrix 工具（成员/消息/房间/用户查询、主动发送、媒体下载、附件发送、自我时间线、工作目录/工作区文件、请示/汇报/秘书回传、澄清提问） |
 | `notifyRoomEvents` | `false` | 是否把入群/离群/资料变更等房间事件注入 agent 会话（供主动打招呼等） |
 | `proactiveSendRequiresApproval` | `true` | 主动消息工具（`matrix_send_dm` 等）首用是否需 Owner 批准 |
 | `preserveRichText` | `true` | 是否保留富文本（`formatted_body`）/回复上下文/编辑语义，结构化注入 agent（类人信息完整）；`false` 回退纯文本 |
