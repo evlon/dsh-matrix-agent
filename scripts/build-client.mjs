@@ -44,6 +44,22 @@ const tmpOut = join(root, 'lib', 'client.bundle.tmp.js')
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 const pluginVersion = typeof pkg.version === 'string' ? pkg.version : 'dev'
 
+// 读取当前依赖的 dsh 核心（@deepseek-ai/dsh-agent）版本号，构建时注入为
+// __DSH_AGENT_VERSION__ 常量，供设置页展示「依赖的 dsh 版本」。
+// 优先读实际安装的 dsh-agent 版本（node_modules 真实解析结果），失败则回退
+// 到 package.json peerDependencies 声明的版本范围（去 ^ 前缀）。
+function resolveDshAgentVersion() {
+  try {
+    const agentPkg = require.resolve('@deepseek-ai/dsh-agent/package.json')
+    const agent = JSON.parse(readFileSync(agentPkg, 'utf8'))
+    if (typeof agent.version === 'string') return agent.version
+  } catch { /* 未安装：回退 peer 声明 */ }
+  const peer = pkg.peerDependencies?.['@deepseek-ai/dsh-agent']
+  if (typeof peer === 'string') return peer.replace(/^\^/, '')
+  return 'unknown'
+}
+const dshAgentVersion = resolveDshAgentVersion()
+
 const BANNER = `window.__ModuleLoader__.load({
   id: "dsh-matrix-agent",
   factory: (require) => {
@@ -141,6 +157,7 @@ execFileSync(
     '--target=es2020',
     '--external:react',
     `--define:__PLUGIN_VERSION__=${JSON.stringify(pluginVersion)}`,
+    `--define:__DSH_AGENT_VERSION__=${JSON.stringify(dshAgentVersion)}`,
     '--log-level=error',
     `--outfile=${tmpOut}`,
   ],

@@ -35,6 +35,13 @@ import React from 'react'
  */
 const PLUGIN_VERSION = typeof __PLUGIN_VERSION__ !== 'undefined' ? __PLUGIN_VERSION__ : 'dev'
 
+/**
+ * 依赖的 dsh 核心（@deepseek-ai/dsh-agent）版本号：由 scripts/build-client.mjs 构建时
+ * 注入（esbuild define），浏览器端无法读 package.json。未注入时回退 'unknown'。
+ * 用于设置页展示「当前插件依赖的 dsh 版本」。
+ */
+const DSH_AGENT_VERSION = typeof __DSH_AGENT_VERSION__ !== 'undefined' ? __DSH_AGENT_VERSION__ : 'unknown'
+
 /** Required services (cordis fiber inject). */
 export const inject = ['slots', 'settingsScope', 'connection', 'locale']
 
@@ -564,7 +571,7 @@ function MatrixSettingsPage(props) {
   return React.createElement('div', null,
     React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: '8px', marginBottom: '4px' } },
       React.createElement('h3', { style: { margin: '0', color: 'var(--dsw-alias-label-primary)' } }, '数字分身'),
-      React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, `dsh-matrix-agent v${PLUGIN_VERSION}`)),
+      React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, `dsh-matrix-agent v${PLUGIN_VERSION} · dsh v${DSH_AGENT_VERSION}`)),
     React.createElement('div', { style: { display: 'flex', gap: '4px', marginBottom: '16px', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
       tabs.map((tab) =>
         React.createElement('button', {

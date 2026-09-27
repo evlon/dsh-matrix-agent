@@ -20,6 +20,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { createRequire } from 'node:module'
 import { MatrixBridge } from '@evlon/dsh-bridge'
 import type { Config as MatrixConfig, DigitalTwinAccount } from '@evlon/dsh-bridge'
 import { resolveStateDir } from '@evlon/dsh-bridge'
@@ -33,6 +34,20 @@ export * from '@evlon/dsh-bridge'
 export * from './matrix.js'
 export * from './tools.js'
 
+// ESM 下用 createRequire 解析自身与 dsh 核心的 package.json 版本（运行时读取，
+// 不依赖构建期注入；浏览器端 client 半无法用 fs，才走构建期 define 注入）。
+const require = createRequire(import.meta.url)
+
+/** 读取某包的运行时版本号（读 package.json 的 version 字段，解析失败返回 undefined）。 */
+function readPkgVersion(pkgName: string): string | undefined {
+  try {
+    const pkg = require(`${pkgName}/package.json`) as { version?: unknown }
+    return typeof pkg.version === 'string' ? pkg.version : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export const name = 'matrix-agent'
 /**
  * 依赖：agents/tools（核心）+ settings（设置页 namespace 与快照镜像的 Host 提供者）。
@@ -43,6 +58,12 @@ export const name = 'matrix-agent'
 export const inject = ['agents', 'tools', 'settings']
 
 export function apply(ctx: Context, config: MatrixConfig): void {
+  // 插件初始化：打印自身版本 + 当前依赖的 dsh 核心（@deepseek-ai/dsh-agent）版本，
+  // 便于在日志里核对插件适配的 dsh 版本线（本包 peer 要求 ^0.1.7-rc.1）。
+  const selfVersion = readPkgVersion('dsh-matrix-agent') ?? 'unknown'
+  const dshAgentVersion = readPkgVersion('@deepseek-ai/dsh-agent') ?? 'unknown'
+  ctx.logger.info('[dsh-matrix-agent] plugin version=%s, dsh-agent version=%s', selfVersion, dshAgentVersion)
+
   // stateDir 绝对化：相对路径锚定到 DSH_HOME（而非 cwd），使不同 dsh 实例
   // （开发者/测试者/使用者各自 DSH_HOME）在相同工作目录下运行也互不覆盖 state.json。
   config.stateDir = resolveStateDir(config.stateDir)
