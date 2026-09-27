@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@evlon/dsh-bridge':
-        specifier: ^0.2.12
-        version: 0.2.12(479ec291f19ea01cbdcedd7c1b4b359f)
+        specifier: ^0.2.13
+        version: 0.2.13(479ec291f19ea01cbdcedd7c1b4b359f)
       '@evlon/dsh-channel-core':
         specifier: ^0.1.1
         version: 0.1.1
@@ -375,10 +375,10 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@evlon/dsh-bridge@0.2.12':
-    resolution: {integrity: sha512-4t8FgfTvDANl24VIYUzMo/LY6khIkS7iheuFCrYlMsga9mBVtL0ZeT5ASGqYvZNWhbiNV++Bep2mmEVMi85isQ==}
+  '@evlon/dsh-bridge@0.2.13':
+    resolution: {integrity: sha512-d9aEvUEgsp4yDGaVG/Y0eiOdsklz7RKa81LuAri2crgmSpyevhi1UkNojMxoDOYCDhAJpoleWPmUeEPNzTdCpQ==}
     peerDependencies:
-      '@deepseek-ai/cordis': ^4.0.2
+      '@deepseek-ai/cordis': ^4.0.4
       '@deepseek-ai/dsh-agent': ^0.1.7-rc.1
       '@deepseek-ai/dsh-attachment': ^0.1.7-rc.1
       '@deepseek-ai/dsh-llm': ^0.1.7-rc.1
@@ -663,7 +663,7 @@ snapshots:
   '@esbuild/win32-x64@0.28.2':
     optional: true
 
-  '@evlon/dsh-bridge@0.2.12(479ec291f19ea01cbdcedd7c1b4b359f)':
+  '@evlon/dsh-bridge@0.2.13(479ec291f19ea01cbdcedd7c1b4b359f)':
     dependencies:
       '@deepseek-ai/cordis': 4.0.4
       '@deepseek-ai/dsh-agent': 0.1.7-rc.1(3dea5cc656f6f2d6e1d95e557baaef12)
