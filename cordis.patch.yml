@@ -13,13 +13,13 @@
       name: dsh-matrix-agent
       config:
         homeserverUrl: 'https://im-ipm.ict.cmcc'
-        # 本进程登录的分身账号（@ai-niukunliang 分身自己）
-        userId: '@ai-niukunliang:im-ipm.ict.cmcc'
+        # 本进程登录的分身账号（@ai-xxxxxxxx 分身自己）
+        userId: '@ai-xxxxxxxx:im-ipm.ict.cmcc'
         # accessToken 留空时回退到环境变量 DSH_MATRIX_TOKEN（两者都没有则插件加载失败）
-        accessToken: ''
-        # 工作责任负责人：真实人账号 @niukunliang（仅在 Matrix 客户端登录）
-        # 设置后：审批/吊销仅 @niukunliang 可应答；其消息也被放行
-        owner: '@niukunliang:im-ipm.ict.cmcc'
+        accessToken: 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+        # 工作责任负责人：真实人账号 @xxxxxxx（仅在 Matrix 客户端登录）
+        # 设置后：审批/吊销仅 @xxxxxxx 可应答；其消息也被放行
+        owner: '@xxxxxxx:im-ipm.ict.cmcc'
         # 响应房间所有消息（分身与专人/其他分身/真人同事协作）
         respondToAll: false
         # 白名单为空且 allowAllUsers=false 时拒绝所有入站消息（fail closed）
@@ -27,14 +27,15 @@
         allowAllUsers: true
         provider: 'codebuddy'
         model: 'deepseek-v4-flash'
-        # room agent 挂载的岗位 preset：pm = 产品经理数字员工（见各 dsh-job-<job> 独立岗位仓，
-        # 如 @evlon/dsh-job-pm；本地开发用 E:\ai-works\dsh-jobs\<job> junction 集合 + dev_job_install 落盘）。
-        # 岗位 preset 提供 persona（人设+秘书工作流）+ skill 加载能力；通道工具由 host 全局注册。
-        agentPreset: 'pm'
+        # room agent 挂载的岗位 preset：决定工具集与角色提示。
+        # 安全兜底：用 'standard'（内置必然存在），绝不写死某个岗位——岗位由「分身工作台 →
+        # 岗位 tab」或激活时选的默认岗位（agent-presets.default）动态注入；写死某岗位会因
+        # 该岗位未安装/已下架而 fatal load failure（历史教训：写死 pm 导致全新安装崩溃）。
+        agentPreset: 'standard'
         chunkMaxChars: 4000
         mergeTimeoutSecs: 5
         approvalTimeoutSecs: 300
         stateDir: '.dsh-matrix'
-        # 本进程只跑一个分身；其它分身（如 @ai-niukunliang-dev）请用独立 profile/进程
+        # 本进程只跑一个分身；其它分身（如 @ai-xxxxxxx-dev）请用独立 profile/进程
         digitalTwinMode: false
         digitalTwins: []
