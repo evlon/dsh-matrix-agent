@@ -13,7 +13,7 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { MatrixBridge } from '@evlon/dsh-bridge'
+import { MatrixBridge } from '../lib/index.js'
 
 const ROOM_ID = '!room:hs.example'
 const USER_ID = '@bot:hs.example'

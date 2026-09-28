@@ -1,7 +1,7 @@
 /**
  * 清理 lib 目录（跨平台），确保 tsc 重新编译时不会有旧 src 模块的孤儿产物残留。
- * 拆包后 src 只剩 index/matrix/tools + client，旧模块（bridge/config/format/...）
- * 已迁到 @evlon/dsh-bridge；不清 lib 会残留旧 .js/.d.ts 并被误 import。
+ * 合并后 src 含 index + client + bridge/ + channel/ + tools-channel/（原 @evlon/dsh-bridge
+ * 与 dsh-channel-* 三包已并入本包）；不清 lib 会残留旧 .js/.d.ts 并被误 import。
  */
 import { mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'

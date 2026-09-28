@@ -188,11 +188,10 @@ async function applyScope(scope, patch) {
   }
 }
 
-/** 数据源 hook：并行拉取 provider/model/agentPreset 目录。 */
+/** 数据源 hook：并行拉取 provider/model 目录。 */
 function useRuntimeCatalogs(conn) {
   const [providers, setProviders] = React.useState([])
   const [modelGroups, setModelGroups] = React.useState([])
-  const [presets, setPresets] = React.useState([])
 
   React.useEffect(() => {
     if (conn === undefined || conn.api === undefined) return undefined
@@ -209,19 +208,10 @@ function useRuntimeCatalogs(conn) {
       const groups = Array.isArray(res.result?.value?.groups) ? res.result.value.groups : []
       setModelGroups(groups)
     }).catch(() => {})
-    // agentPresets：响应为 { result: { ok, value: { presets } } }。
-    conn.api.agentPresets.list({}).then((res) => {
-      if (!alive || res.result?.ok !== true) return
-      const items = Array.isArray(res.result?.value?.presets) ? res.result.value.presets : []
-      setPresets(items.map((p) => ({
-        value: p.id,
-        label: (p.name ?? p.id) + (p.isDefault ? '（默认）' : ''),
-      })))
-    }).catch(() => {})
     return () => { alive = false }
   }, [conn])
 
-  return { providers, modelGroups, presets }
+  return { providers, modelGroups }
 }
 
 /** 该 provider 下的模型下拉 options（含当前值 fallback）。 */
@@ -239,14 +229,11 @@ function modelOptionsFor(groups, provider, currentModel) {
 
 /** Matrix 账号标签页。 */
 function AccountTab(props) {
-  const { form, set, save, saved, reset, providers, modelGroups, presets, conn } = props
+  const { form, set, save, saved, reset, providers, modelGroups, conn } = props
   const providerOptions = providers.length > 0
     ? providers
     : (form.provider !== undefined && form.provider !== '' ? [{ value: form.provider, label: form.provider + '（当前）' }] : [])
   const modelOptions = modelOptionsFor(modelGroups, form.provider, form.model)
-  const presetOptions = presets.length > 0
-    ? presets
-    : (form.agentPreset !== undefined && form.agentPreset !== '' ? [{ value: form.agentPreset, label: form.agentPreset + '（当前）' }] : [])
   const defaultOwner = deriveDefaultOwner(form.userId)
 
   return React.createElement('div', null,
@@ -287,10 +274,6 @@ function AccountTab(props) {
     React.createElement(SelectField, {
       label: '模型', value: form.model, onChange: set('model'),
       options: modelOptions.length > 0 ? modelOptions : [{ value: '', label: '（选择 provider 后加载）' }],
-    }),
-    React.createElement(SelectField, {
-      label: 'Agent Preset', value: form.agentPreset, onChange: set('agentPreset'),
-      options: presetOptions.length > 0 ? presetOptions : [{ value: '', label: '（加载中或未配置）' }],
     }),
     React.createElement(SelectField, {
       label: REASONING_LABELS.worker, value: form.workerReasoningEffort, onChange: set('workerReasoningEffort'),

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { TwinTimeline, TIMELINE_KIND_LABELS } from '@evlon/dsh-bridge'
+import { TwinTimeline, TIMELINE_KIND_LABELS } from '../lib/index.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

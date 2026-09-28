@@ -21,18 +21,18 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { createRequire } from 'node:module'
-import { MatrixBridge } from '@evlon/dsh-bridge'
-import type { Config as MatrixConfig, DigitalTwinAccount } from '@evlon/dsh-bridge'
-import { resolveStateDir } from '@evlon/dsh-bridge'
-import { registerMatrixSettings } from '@evlon/dsh-bridge'
-import type { TimelineOps, OwnerDecisionOps, JobSwitchOps } from '@evlon/dsh-bridge'
+import { MatrixBridge } from './bridge/index.js'
+import type { Config as MatrixConfig, DigitalTwinAccount } from './bridge/index.js'
+import { resolveStateDir } from './bridge/index.js'
+import { registerMatrixSettings } from './bridge/index.js'
+import type { TimelineOps, OwnerDecisionOps, JobSwitchOps } from './bridge/index.js'
 
-// 向后兼容 re-export：把 @evlon/dsh-bridge 的桥接层/支撑类型面转发出去，
-// 保持 dsh-matrix-agent 旧 import 路径（如 `dsh-matrix-agent/bridge`）不破坏。
-export * from '@evlon/dsh-bridge'
-// 通道层与工具向后兼容 shim：仍从本地 matrix.ts/tools.ts 转发到 @evlon 通道包。
-export * from './matrix.js'
-export * from './tools.js'
+// 桥接层/支撑类型面：原 @evlon/dsh-bridge 已合并进本包，从这里转发。
+export * from './bridge/index.js'
+// 通道层（Channel 接口 + MatrixChannel 实现）与矩阵工具：原
+// @evlon/dsh-channel-core / dsh-channel-matrix / dsh-tools-channel 已合并进本包。
+export * from './channel/index.js'
+export * from './tools-channel/index.js'
 
 // ESM 下用 createRequire 解析自身与 dsh 核心的 package.json 版本（运行时读取，
 // 不依赖构建期注入；浏览器端 client 半无法用 fs，才走构建期 define 注入）。

@@ -20,7 +20,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { MatrixBridge } from '@evlon/dsh-bridge'
+import { MatrixBridge } from '../lib/index.js'
 
 const OWNER = '@owner:hs.example'
 const BOT = '@twin:hs.example'
