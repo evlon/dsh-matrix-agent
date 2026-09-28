@@ -1,0 +1,48 @@
+# ci：分支推送 / PR 上的构建 + 测试门禁。
+#
+# 目的：把「改动是否破坏现有测试」的判定前移到 CI。现有两个 workflow 分别只在
+# tag（npm-publish）与每日定时（dsh-daily-sync）触发，普通分支推送与 PR 没有
+# 任何自动校验——本 workflow 补上这一层，让 review 只看代码语义，不看「是否跑得起来」。
+#
+# 工具链与 npm-publish 保持一致（pnpm 9 / node 24）：
+#   install --frozen-lockfile → build → test
+# 其中 `pnpm test` 自身含 clean-lib + tsc + build-client + node --test，
+# 等价于「构建 + 类型检查 + 全量单测」。
+#
+# 需要 secret：无。
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build & test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Test
+        run: pnpm test
