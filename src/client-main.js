@@ -570,7 +570,7 @@ function MatrixSettingsPage(props) {
   const [scope] = React.useState(() => bindScope(ctx, MATRIX_NS))
   const [form, setForm] = React.useState(() => mergeFormSection(undefined))
   const [saved, setSaved] = React.useState(false)
-  const [active, setActive] = React.useState('account')
+  const [active, setActive] = React.useState('connection')
 
   React.useEffect(() => {
     const update = () => {
@@ -651,7 +651,7 @@ function MatrixSettingsPage(props) {
     React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: '8px', marginBottom: '4px' } },
       React.createElement('h3', { style: { margin: '0', color: 'var(--dsw-alias-label-primary)' } }, '数字分身'),
       React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, `dsh-matrix-agent v${PLUGIN_VERSION} · dsh v${DSH_AGENT_VERSION}`)),
-    React.createElement('div', { style: { display: 'flex', gap: '4px', marginBottom: '16px', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
+    React.createElement('div', { role: 'tablist', style: { display: 'flex', gap: '4px', marginBottom: '16px', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
       tabs.map((tab) =>
         React.createElement('button', {
           key: tab.id,
@@ -978,6 +978,7 @@ function OwnerInboxTab(props) {
 function JobBoardTab(props) {
   const ctx = props.ctx
   const { data: board, send } = useWorkbenchRemote(ctx, 'getJobBoard', { defaultPresetId: 'standard', installedPresets: [], rows: [], updatedAt: 0 })
+  const [query, setQuery] = React.useState('')
 
   const switchPreset = (roomId, presetId) => {
     void send('handleJobSwitchOps', { seq: Date.now(), roomId, presetId })
@@ -990,6 +991,45 @@ function JobBoardTab(props) {
   const fmtRoom = (r) => (r.roomName !== undefined && r.roomName !== '' && r.roomName !== r.roomId)
     ? r.roomName
     : (r.roomId !== undefined && r.roomId.length > 28 ? r.roomId.slice(0, 28) + '…' : (r.roomId ?? '?'))
+
+  // 搜索过滤：按房间显示名 / roomId / 会话 id 匹配。
+  const q = query.trim().toLowerCase()
+  const filtered = q === ''
+    ? rows
+    : rows.filter((r) => {
+        const hay = [r.roomName ?? '', r.roomId ?? '', r.sessionId ?? ''].join(' ').toLowerCase()
+        return hay.indexOf(q) >= 0
+      })
+  // 分组：已单独指定（pinned）在前，跟随默认在后；组内保持原顺序。
+  const pinnedRows = filtered.filter((r) => r.pinned === true)
+  const defaultRows = filtered.filter((r) => r.pinned !== true)
+
+  const roomCard = (r) => {
+    const pinned = r.pinned === true
+    return React.createElement('div', {
+      key: r.roomId,
+      style: {
+        display: 'flex', alignItems: 'center', gap: '10px',
+        padding: '10px 12px', marginBottom: '6px',
+        border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px',
+        background: 'var(--dsw-alias-bg-layer-1)',
+      },
+    },
+      React.createElement('div', { style: { flex: 1, minWidth: 0 } },
+        React.createElement('div', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+          fmtRoom(r)),
+        React.createElement('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginTop: '2px' } },
+          (pinned ? '已单独指定' : '跟随默认') + (r.hasProduced ? ' · 已产出（切换将新建会话）' : ''))),
+      React.createElement('select', {
+        value: r.presetId,
+        onChange: (e) => switchPreset(r.roomId, e.target.value),
+        style: { ...INPUT_STYLE, minWidth: '140px' },
+      },
+        presets.map((p) => React.createElement('option', { key: p.id, value: p.id }, p.name + (p.id === r.presetId ? '（当前）' : '')))))
+  }
+  const groupTitle = (text, count) => React.createElement('div', {
+    style: { fontSize: '12px', fontWeight: 600, color: 'var(--dsw-alias-label-secondary)', margin: '14px 0 6px' },
+  }, text + ' · ' + count + ' 间')
 
   return React.createElement('div', null,
     React.createElement('p', { style: HINT_STYLE },
@@ -1008,33 +1048,25 @@ function JobBoardTab(props) {
         style: INPUT_STYLE,
       },
         presets.map((p) => React.createElement('option', { key: p.id, value: p.id }, p.name + (p.id === defaultId ? '（当前）' : ''))))),
-    // 每房间岗位区
+    // 房间搜索 + 列表
     rows.length === 0
       ? React.createElement('p', { style: HINT_STYLE }, '暂无已绑定房间。同事拉你进群并派活后，对应房间会出现在这里。')
-      : rows.map((r) => {
-          const pinned = r.pinned === true
-          return React.createElement('div', {
-            key: r.roomId,
-            style: {
-              display: 'flex', alignItems: 'center', gap: '10px',
-              padding: '10px 12px', marginBottom: '6px',
-              border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px',
-              background: 'var(--dsw-alias-bg-layer-1)',
-            },
-          },
-            React.createElement('div', { style: { flex: 1, minWidth: 0 } },
-              React.createElement('div', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } },
-                fmtRoom(r)),
-              React.createElement('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginTop: '2px' } },
-                (pinned ? '已单独指定' : '跟随默认') + (r.hasProduced ? ' · 已产出（切换将新建会话）' : ''))),
-            React.createElement('select', {
-              value: r.presetId,
-              onChange: (e) => switchPreset(r.roomId, e.target.value),
-              style: { ...INPUT_STYLE, minWidth: '140px' },
-            },
-              presets.map((p) => React.createElement('option', { key: p.id, value: p.id }, p.name + (p.id === r.presetId ? '（当前）' : '')))))
-        }))
+      : React.createElement(React.Fragment, null,
+          React.createElement('input', {
+            value: query,
+            onChange: (e) => setQuery(e.target.value),
+            placeholder: '搜索房间名 / roomId / 会话 id…（共 ' + rows.length + ' 间）',
+            style: { ...INPUT_STYLE, width: '100%', boxSizing: 'border-box', marginBottom: '4px' },
+          }),
+          filtered.length === 0
+            ? React.createElement('p', { style: HINT_STYLE }, '没有匹配「' + query + '」的房间。')
+            : React.createElement(React.Fragment, null,
+                pinnedRows.length > 0 && groupTitle('已单独指定', pinnedRows.length),
+                pinnedRows.map(roomCard),
+                defaultRows.length > 0 && groupTitle('跟随默认', defaultRows.length),
+                defaultRows.map(roomCard))))
 }
+
 
 /** 分身工作台入口按钮：带待批角标（收件箱待批数 + 任务看板活跃数）。 */
 function TwinDeskButton(props) {
@@ -1110,10 +1142,12 @@ function TwinDeskPanel(props) {
       },
         React.createElement('h3', { style: { margin: 0, fontSize: '16px', color: 'var(--dsw-alias-label-primary)', whiteSpace: 'nowrap' } },
           '分身工作台'),
-        React.createElement('div', { style: { display: 'flex', gap: '2px' } },
+        React.createElement('div', { style: { display: 'flex', gap: '2px' }, role: 'tablist' },
           tabs.map((t) =>
             React.createElement('button', {
               key: t.id,
+              role: 'tab',
+              'aria-selected': tab === t.id,
               onClick: () => setTab(t.id),
               style: {
                 padding: '6px 14px', border: 'none', cursor: 'pointer', fontSize: '13px',
