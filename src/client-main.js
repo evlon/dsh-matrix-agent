@@ -102,9 +102,10 @@ function useWorkbenchRemote(ctx, method, fallback, pollMs = 3000) {
   React.useEffect(() => {
     let cancelled = false
     let timer = undefined
+    // matrixWorkbench 是独立 Cordis service（service 名 remote.matrixWorkbench），
+    // 由 $mount 经 RemoteNamespaceService 注册，不是 remote service 上的属性。
     const ns = () => {
-      const r = ctx.get('remote')
-      return r && r.matrixWorkbench ? r.matrixWorkbench : undefined
+      return ctx.get('remote.matrixWorkbench')
     }
     const pull = async () => {
       const wb = ns()
@@ -141,8 +142,7 @@ function useWorkbenchRemote(ctx, method, fallback, pollMs = 3000) {
 
   /** 发命令（Client→Host）：fire-and-forget，返回 RemoteResult。 */
   const send = React.useCallback((cmd, ...args) => {
-    const r = ctx.get('remote')
-    const wb = r && r.matrixWorkbench ? r.matrixWorkbench : undefined
+    const wb = ctx.get('remote.matrixWorkbench')
     const fn = wb ? wb[cmd] : undefined
     if (typeof fn !== 'function') return Promise.resolve(undefined)
     return Promise.resolve(fn(...args))
