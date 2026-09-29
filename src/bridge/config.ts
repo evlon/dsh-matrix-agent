@@ -426,20 +426,27 @@ export interface Config {
   secretaryDecisionTimeoutSecs: number
 }
 
-export const Config: Schema<Config> = Schema.object({
+// 注：标 `.volatile()` 的字段可在设置页热编辑（0.1.7 SettingsForms.describe() 只投影 volatile 字段）。
+// 0.1.7 关键约定（已实测验证）：volatile 字段【可】写进 cordis.patch.yml 作为「部署初始值」，
+// 只要 profile 层用「不带 insert 的 - id: matrix」（覆盖语义）而非 - insert:（会 compose 出两个
+// entry，导致 configEditor.edit 写盘被拒「overridden by home patch」）。
+// 故字段划分：仅「连接/身份」参数（homeserverUrl/accessToken/userId/owner/instanceKey/provider）
+// 保持非 volatile（写死 patch，改需重启）；「运行时行为开关」（respondToAll/allowAllUsers 等）
+// 标 volatile，可热编辑 + 保留 patch 初始值。
+export const Config = Schema.object({
   homeserverUrl: Schema.string().required(),
   accessToken: Schema.string().default(''),
   userId: Schema.string().required(),
-  allowedUserIds: Schema.array(Schema.string()).default([]),
-  allowAllUsers: Schema.boolean().default(false),
+  allowedUserIds: Schema.array(Schema.string()).default([]).volatile(),
+  allowAllUsers: Schema.boolean().default(false).volatile(),
   owner: Schema.string().default(''),
-  respondToAll: Schema.boolean().default(true),
+  respondToAll: Schema.boolean().default(true).volatile(),
   provider: Schema.string().default('deepseek-official'),
-  model: Schema.string().default('deepseek-v4-flash'),
-  agentPreset: Schema.string().default('standard'),
-  workerReasoningEffort: Schema.string().default(''),
-  secretaryReasoningEffort: Schema.string().default(''),
-  chunkMaxChars: Schema.number().default(4000),
+  model: Schema.string().default('deepseek-v4-flash').volatile(),
+  agentPreset: Schema.string().default('standard').volatile(),
+  workerReasoningEffort: Schema.string().default('').volatile(),
+  secretaryReasoningEffort: Schema.string().default('').volatile(),
+  chunkMaxChars: Schema.number().default(4000).volatile(),
   mergeTimeoutSecs: Schema.number().default(5),
   approvalTimeoutSecs: Schema.number().default(300),
   stateDir: Schema.string().default('.dsh-matrix'),
@@ -464,32 +471,32 @@ export const Config: Schema<Config> = Schema.object({
   cwdCandidates: Schema.array(Schema.string()).default([process.cwd()]),
   matrixTools: Schema.boolean().default(true),
   notifyRoomEvents: Schema.boolean().default(false),
-  proactiveSendRequiresApproval: Schema.boolean().default(true),
-  preserveRichText: Schema.boolean().default(true),
+  proactiveSendRequiresApproval: Schema.boolean().default(true).volatile(),
+  preserveRichText: Schema.boolean().default(true).volatile(),
 
-  autoIntroduce: Schema.boolean().default(true),
-  maxSelfIntroMentions: Schema.number().default(20),
-  memberMemory: Schema.boolean().default(true),
-  autoGreet: Schema.boolean().default(true),
-  selfIntroTemplate: Schema.string().default('大家好，我是 {{userId}}，很高兴加入这个群。以后有什么需要帮忙的尽管找我，我会尽力配合大家的工作！'),
+  autoIntroduce: Schema.boolean().default(true).volatile(),
+  maxSelfIntroMentions: Schema.number().default(20).volatile(),
+  memberMemory: Schema.boolean().default(true).volatile(),
+  autoGreet: Schema.boolean().default(true).volatile(),
+  selfIntroTemplate: Schema.string().default('大家好，我是 {{userId}}，很高兴加入这个群。以后有什么需要帮忙的尽管找我，我会尽力配合大家的工作！').volatile(),
   inviteApprovalEnabled: Schema.boolean().default(true),
   inviteApprovalTimeoutSecs: Schema.number().default(0),
   inviteApprovalTimeoutAction: Schema.union([Schema.const('pending'), Schema.const('reject')]).default('reject'),
 
-  receptionAckNewTask: Schema.string().default('收到，我这就去整理{{taskHint}}，稍后把结果发你～'),
-  receptionAckBusyQuestion: Schema.string().default('[前台接待] @{{lp}} 这条我记下了，手头正忙（处理任务中）{{taskDesc}}{{eta}}，处理完马上回你；有急需可以再把关键点说一遍～'),
-  receptionAckBusy: Schema.string().default('[前台接待] @{{lp}} 收到，我手头正忙（处理任务中）{{taskDesc}}{{eta}}，稍后回你这条～'),
-  receptionRejected: Schema.string().default('[前台接待] 主人暂时不同意开工，任务「{{summary}}」先搁置。'),
-  receptionGiveUp: Schema.string().default('[前台接待] 我正在整理「{{summary}}」，结果稍后同步，请稍等～'),
+  receptionAckNewTask: Schema.string().default('收到，我这就去整理{{taskHint}}，稍后把结果发你～').volatile(),
+  receptionAckBusyQuestion: Schema.string().default('[前台接待] @{{lp}} 这条我记下了，手头正忙（处理任务中）{{taskDesc}}{{eta}}，处理完马上回你；有急需可以再把关键点说一遍～').volatile(),
+  receptionAckBusy: Schema.string().default('[前台接待] @{{lp}} 收到，我手头正忙（处理任务中）{{taskDesc}}{{eta}}，稍后回你这条～').volatile(),
+  receptionRejected: Schema.string().default('[前台接待] 主人暂时不同意开工，任务「{{summary}}」先搁置。').volatile(),
+  receptionGiveUp: Schema.string().default('[前台接待] 我正在整理「{{summary}}」，结果稍后同步，请稍等～').volatile(),
 
-  receptionEnabled: Schema.boolean().default(false),
-  receptionPreset: Schema.string().default('reception'),
-  receptionProvider: Schema.string().default(''),
-  receptionModel: Schema.string().default(''),
-  receptionReasoningEffort: Schema.string().default('off'),
-  receptionTimeoutSecs: Schema.number().default(3),
-  receptionMinLength: Schema.number().default(0),
-  receptionThrottleSecs: Schema.number().default(0),
+  receptionEnabled: Schema.boolean().default(false).volatile(),
+  receptionPreset: Schema.string().default('reception').volatile(),
+  receptionProvider: Schema.string().default('').volatile(),
+  receptionModel: Schema.string().default('').volatile(),
+  receptionReasoningEffort: Schema.string().default('off').volatile(),
+  receptionTimeoutSecs: Schema.number().default(3).volatile(),
+  receptionMinLength: Schema.number().default(0).volatile(),
+  receptionThrottleSecs: Schema.number().default(0).volatile(),
   receptionKinds: Schema.dict(Schema.object({
     label: Schema.string().required(),
     describe: Schema.string().required(),
@@ -497,7 +504,7 @@ export const Config: Schema<Config> = Schema.object({
     ackText: Schema.string().default(''),
     busy: Schema.boolean().default(true),
     forward: Schema.boolean().default(true),
-  })).default(defaultReceptionKinds()),
+  })).default(defaultReceptionKinds()).volatile(),
 
   // per-room 群工作模式显式覆盖：键=房间 id（Matrix roomId 或群名），值=钉死模式；
   // 缺省/未收录 = auto。设置页可手动钉死，口播指令由前台识别后写入（默认空）。
@@ -528,16 +535,42 @@ export const Config: Schema<Config> = Schema.object({
   timelineCrossRoom: Schema.boolean().default(false),
   timelineCap: Schema.number().default(500),
 
-  testRoomPrefix: Schema.string().default('【测试】'),
+  testRoomPrefix: Schema.string().default('【测试】').volatile(),
   testEnvAllowExecute: Schema.boolean().default(true),
   twinModeRoomPrefix: Schema.string().default(''),
-  secretaryGroupDefault: Schema.boolean().default(true),
-  secretaryDmDefault: Schema.boolean().default(false),
+  secretaryGroupDefault: Schema.boolean().default(true).volatile(),
+  secretaryDmDefault: Schema.boolean().default(false).volatile(),
 
-  taskClarifyTimeoutSecs: Schema.number().default(120),
-  taskConfirmTimeoutSecs: Schema.number().default(600),
-  secretaryDecisionTimeoutSecs: Schema.number().default(180),
-})
+  taskClarifyTimeoutSecs: Schema.number().default(120).volatile(),
+  taskConfirmTimeoutSecs: Schema.number().default(600).volatile(),
+  secretaryDecisionTimeoutSecs: Schema.number().default(180).volatile(),
+}) as unknown as Schema<Config>
+
+/**
+ * 解包 apply 收到的 config：标 `.volatile()` 的字段在运行时是 cosmokit 的 `Volatile<T>`
+ * 对象（schemastery Schema.resolve 对 meta.volatile 节点 createVolatile 包装），需 `.get()`
+ * 解包成普通值。与官方 dsh-llm-deepseek 的 plainOptions 同构。
+ * 热更新（loader/volatile-update）后 config 对象引用稳定、Volatile ref 被原地更新，
+ * 重跑本函数即得最新值。
+ * 用 duck-typing 判断 Volatile（有 get 方法的对象），避免显式依赖 @deepseek-ai/cosmokit。
+ */
+function unwrapVolatile(value: unknown): unknown {
+  if (value !== null && typeof value === 'object' && typeof (value as { get?: unknown }).get === 'function') {
+    // 仅当对象除 get 外无其他自身属性时才视为 Volatile 包装（避免误伤带 get 方法的业务对象）。
+    const keys = Object.keys(value as object)
+    if (keys.length <= 2 && keys.includes('get')) return (value as { get(): unknown }).get()
+  }
+  return value
+}
+
+export function plainMatrixConfig(raw: unknown): Config {
+  const src = raw as Record<string, unknown>
+  const out: Record<string, unknown> = {}
+  for (const key of Object.keys(src)) {
+    out[key] = unwrapVolatile(src[key])
+  }
+  return out as unknown as Config
+}
 
 /** 内置 5 类接待分类标签的默认定义（用户可在 settings receptionKinds 里增删改）。 */
 export function defaultReceptionKinds(): Record<string, ReceptionKindDef> {

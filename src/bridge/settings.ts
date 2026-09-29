@@ -16,11 +16,10 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import z from '@deepseek-ai/schemastery'
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Config } from './config.js'
-import { defaultReceptionKinds, DEFAULT_AUTOTUNE, DEFAULT_PARALLEL } from './config.js'
+import { plainMatrixConfig } from './config.js'
 
 /** 文件诊断日志：与 bridge 的 diag 同写 stateDir/diagnostics.log（stateDir 已由 resolveStateDir 绝对化到 DSH_HOME）。 */
 function fileLog(stateDir: string, message: string): void {
@@ -31,8 +30,12 @@ function fileLog(stateDir: string, message: string): void {
   } catch { /* 忽略 */ }
 }
 
-/** settings namespace 名称（单入口单 ns：账号 + 社交统一存放）。 */
-export const MATRIX_NS = 'dsh-matrix'
+/**
+ * settings namespace 名称 = cordis 组合里的 entry id（cordis.patch.yml 的 insert.id = 'matrix'）。
+ * 0.1.7 的 SettingsForms.describe() 用 ns = entry.options.id，故必须是 'matrix'，不是 'dsh-matrix'。
+ * client 端 configForms.get('matrix') 与此一致。
+ */
+export const MATRIX_NS = 'matrix'
 
 /** 时间线管理命令（Client→Host，Host 处理后清零，防重启重放）。 */
 export interface TimelineOps {
@@ -270,353 +273,85 @@ export const RESTART_KEYS = new Set([
   'cwdCandidates',
 ])
 
-/** 从 config 提取 settings namespace 声明过的字段作为 base（避免多余键）。 */
-function pickMatrixBase(config: Config): Record<string, unknown> {
-  return {
-    homeserverUrl: config.homeserverUrl,
-    accessToken: config.accessToken,
-    userId: config.userId,
-    owner: config.owner,
-    instanceKey: config.instanceKey,
-    respondToAll: config.respondToAll,
-    allowedUserIds: config.allowedUserIds,
-    allowAllUsers: config.allowAllUsers,
-    provider: config.provider,
-    model: config.model,
-    agentPreset: config.agentPreset,
-    workerReasoningEffort: config.workerReasoningEffort,
-    secretaryReasoningEffort: config.secretaryReasoningEffort,
-    chunkMaxChars: config.chunkMaxChars,
-    mergeTimeoutSecs: config.mergeTimeoutSecs,
-    approvalTimeoutSecs: config.approvalTimeoutSecs,
-    maxRetriesBeforeAbort: config.maxRetriesBeforeAbort,
-    retryCircuitBreakerEnabled: config.retryCircuitBreakerEnabled,
-    matrixTools: config.matrixTools,
-    notifyRoomEvents: config.notifyRoomEvents,
-    proactiveSendRequiresApproval: config.proactiveSendRequiresApproval,
-    preserveRichText: config.preserveRichText,
-    autoIntroduce: config.autoIntroduce,
-    maxSelfIntroMentions: config.maxSelfIntroMentions,
-    memberMemory: config.memberMemory,
-    autoGreet: config.autoGreet,
-    selfIntroTemplate: config.selfIntroTemplate,
-    inviteApprovalEnabled: config.inviteApprovalEnabled,
-    inviteApprovalTimeoutSecs: config.inviteApprovalTimeoutSecs,
-    inviteApprovalTimeoutAction: config.inviteApprovalTimeoutAction,
-    receptionAckNewTask: config.receptionAckNewTask,
-    receptionAckBusyQuestion: config.receptionAckBusyQuestion,
-    receptionAckBusy: config.receptionAckBusy,
-    receptionRejected: config.receptionRejected,
-    receptionGiveUp: config.receptionGiveUp,
-    receptionEnabled: config.receptionEnabled,
-    receptionPreset: config.receptionPreset,
-    receptionProvider: config.receptionProvider,
-    receptionModel: config.receptionModel,
-    receptionReasoningEffort: config.receptionReasoningEffort,
-    receptionTimeoutSecs: config.receptionTimeoutSecs,
-    receptionMinLength: config.receptionMinLength,
-    receptionThrottleSecs: config.receptionThrottleSecs,
-    receptionKinds: config.receptionKinds,
-    roomModes: config.roomModes ?? {},
-    roomPresets: config.roomPresets ?? {},
-    autoTune: config.autoTune ?? DEFAULT_AUTOTUNE,
-    parallel: config.parallel ?? DEFAULT_PARALLEL,
-    timelineEnabled: config.timelineEnabled,
-    timelineInject: config.timelineInject,
-    timelineCrossRoom: config.timelineCrossRoom,
-    timelineCap: config.timelineCap,
-    testRoomPrefix: config.testRoomPrefix,
-    twinModeRoomPrefix: config.twinModeRoomPrefix,
-    secretaryGroupDefault: config.secretaryGroupDefault,
-    secretaryDmDefault: config.secretaryDmDefault,
-    taskClarifyTimeoutSecs: config.taskClarifyTimeoutSecs,
-    taskConfirmTimeoutSecs: config.taskConfirmTimeoutSecs,
-    secretaryDecisionTimeoutSecs: config.secretaryDecisionTimeoutSecs,
-  }
-}
-
 /**
- * 注册 `dsh-matrix` settings namespace（live），返回 merge 后的 config
- * 与 watch 释放器。用户层为空时返回原 config。
+ * 注册矩阵插件的设置集成（0.1.7）：不再使用 settings.register（0.1.5 旧 API 已移除）。
+ * 用户配置走 Config 的 .volatile() 字段（settings 页编辑 → loader/volatile-update 热更）。
+ *
+ * 运行时镜像（timelineSnapshot/ownerInbox/taskBoard/jobBoard，Host→Client）与
+ * 命令通道（timelineOps/ownerDecisionOps/jobSwitchOps，Client→Host）在 0.1.7 里
+ * 不能塞进 settings namespace（settings 只能写 volatile 字段），本阶段先降级为
+ * 内存态（Host 内存持有，接口保留），后续走 Typert RPC（ctx.remote）重构。
  */
 export function registerMatrixSettings(
   ctx: Context,
   config: Config,
   options?: { onTimelineOps?: (ops: TimelineOps) => void; onOwnerDecisionOps?: (ops: OwnerDecisionOps) => void; onJobSwitchOps?: (ops: JobSwitchOps) => void; onConfigChange?: (merged: Config) => void },
-): { merged: Config; dispose: () => void; getMerged: () => Config; updateTimelineSnapshot: (snapshot: { entries: unknown[]; updatedAt: number }) => void; updateOwnerInbox: (snapshot: OwnerInboxSnapshot) => void; updateTaskBoard: (snapshot: TaskBoardSnapshot) => void; updateJobBoard: (snapshot: JobBoardSnapshot) => void; clearTimelineOps: () => void; clearOwnerDecisionOps: () => void; clearJobSwitchOps: () => void } {
-  const onTimelineOps = options?.onTimelineOps
-  const onOwnerDecisionOps = options?.onOwnerDecisionOps
-  const onJobSwitchOps = options?.onJobSwitchOps
+): { merged: Config; dispose: () => void; getMerged: () => Config; updateTimelineSnapshot: (snapshot: { entries: unknown[]; updatedAt: number }) => void; updateOwnerInbox: (snapshot: OwnerInboxSnapshot) => void; updateTaskBoard: (snapshot: TaskBoardSnapshot) => void; updateJobBoard: (snapshot: JobBoardSnapshot) => void; clearTimelineOps: () => void; clearOwnerDecisionOps: () => void; clearJobSwitchOps: () => void; getTimelineSnapshot: () => { entries: unknown[]; updatedAt: number }; getOwnerInboxSnapshot: () => OwnerInboxSnapshot; getTaskBoardSnapshot: () => TaskBoardSnapshot; getJobBoardSnapshot: () => JobBoardSnapshot } {
   const onConfigChange = options?.onConfigChange
-  let current = config
+  // config 是 rawConfig（volatile 字段为 Volatile 对象）；解包成普通 Config 作为当前合并值。
+  let current: Config = plainMatrixConfig(config)
   const disposers: Array<() => void> = []
-  let snapshotScope: { update(patch: object): Promise<void> } | undefined
-  let timelineTimer: NodeJS.Timeout | undefined
-  let pendingTimeline: { entries: unknown[]; updatedAt: number } | undefined
-  let ownerInboxTimer: NodeJS.Timeout | undefined
-  let pendingOwnerInbox: OwnerInboxSnapshot | undefined
-  let taskBoardTimer: NodeJS.Timeout | undefined
-  let pendingTaskBoard: TaskBoardSnapshot | undefined
-  let jobBoardTimer: NodeJS.Timeout | undefined
-  let pendingJobBoard: JobBoardSnapshot | undefined
 
-  const settings = ctx.get('settings') as
-    | {
-        register(ns: string, schema: unknown, options?: { applies?: string; base?: unknown }): {
-          get(): unknown
-          watch(cb: (next: unknown) => void): () => void
-          update(patch: object): Promise<void>
-          replace(section: object): Promise<void>
-        }
-      }
-    | undefined
+  fileLog(current.stateDir, `registerMatrixSettings enter (0.1.7 volatile): stateDir=${current.stateDir}`)
 
-  // 文件诊断：settings 服务是否可用、register 是否执行（不依赖 stdout）。
-  fileLog(config.stateDir, `registerMatrixSettings enter: settingsService=${settings !== undefined} stateDir=${config.stateDir}`)
-
-  if (settings !== undefined) {
-    try {
-      const scope = settings.register(MATRIX_NS, z.object({
-        homeserverUrl: z.string().default(''),
-        accessToken: z.string().role('secret').default(''),
-        userId: z.string().default(''),
-        owner: z.string().default(''),
-        instanceKey: z.string().default(''),
-        respondToAll: z.boolean().default(true),
-        allowedUserIds: z.array(z.string()).default([]),
-        allowAllUsers: z.boolean().default(false),
-        provider: z.string().default(''),
-        model: z.string().default(''),
-        agentPreset: z.string().default('standard'),
-        workerReasoningEffort: z.string().default(''),
-        secretaryReasoningEffort: z.string().default(''),
-        chunkMaxChars: z.number().default(4000),
-        mergeTimeoutSecs: z.number().default(5),
-        approvalTimeoutSecs: z.number().default(300),
-        maxRetriesBeforeAbort: z.number().default(5),
-        retryCircuitBreakerEnabled: z.boolean().default(true),
-        matrixTools: z.boolean().default(true),
-        notifyRoomEvents: z.boolean().default(false),
-        proactiveSendRequiresApproval: z.boolean().default(true),
-        preserveRichText: z.boolean().default(true),
-        autoIntroduce: z.boolean().default(true),
-        maxSelfIntroMentions: z.number().default(20),
-        memberMemory: z.boolean().default(true),
-        autoGreet: z.boolean().default(true),
-        selfIntroTemplate: z.string().default('大家好，我是 {{userId}}，很高兴加入这个群。以后有什么需要帮忙的尽管找我，我会尽力配合大家的工作！'),
-        inviteApprovalEnabled: z.boolean().default(true),
-        inviteApprovalTimeoutSecs: z.number().default(0),
-        inviteApprovalTimeoutAction: z.union([z.const('pending'), z.const('reject')]).default('reject'),
-        receptionAckNewTask: z.string().default('收到，我这就去整理{{taskHint}}，稍后把结果发你～'),
-        receptionAckBusyQuestion: z.string().default('[前台接待] @{{lp}} 这条我记下了，手头正忙（处理任务中）{{taskDesc}}{{eta}}，处理完马上回你；有急需可以再把关键点说一遍～'),
-        receptionAckBusy: z.string().default('[前台接待] @{{lp}} 收到，我手头正忙（处理任务中）{{taskDesc}}{{eta}}，稍后回你这条～'),
-        receptionRejected: z.string().default('[前台接待] 主人暂时不同意开工，任务「{{summary}}」先搁置。'),
-        receptionGiveUp: z.string().default('[前台接待] 我正在整理「{{summary}}」，结果稍后同步，请稍等～'),
-        receptionEnabled: z.boolean().default(false),
-        receptionPreset: z.string().default('reception'),
-        receptionProvider: z.string().default(''),
-        receptionModel: z.string().default(''),
-        receptionReasoningEffort: z.string().default('off'),
-        receptionTimeoutSecs: z.number().default(3),
-        receptionMinLength: z.number().default(0),
-        receptionThrottleSecs: z.number().default(0),
-        receptionKinds: z.dict(z.object({
-          label: z.string(),
-          describe: z.string(),
-          ack: z.boolean().default(true),
-          ackText: z.string().default(''),
-          busy: z.boolean().default(true),
-          forward: z.boolean().default(true),
-        })).default(defaultReceptionKinds()),
-        // per-room 群工作模式显式覆盖（键=房间 id/群名，值=钉死模式；缺省 auto）。
-        roomModes: z.dict(z.union([z.const('auto'), z.const('parallel'), z.const('cohesive')])).default({}),
-        // per-room 岗位覆盖（键=房间 id/群名，值=岗位 preset id；缺省回退 agentPreset）。
-        roomPresets: z.dict(z.string()).default({}),
-        // auto 自适配阈值（阶段 3）：窗口/占比/票差/冷却；settings 热更即时生效。
-        // 阈值可配 ≠ 倾向落配置——产出的倾向值仍只存内存（铁律：auto 只读、绝不写 roomModes）。
-        autoTune: z.object({
-          windowN: z.number().min(2).default(DEFAULT_AUTOTUNE.windowN),
-          parallelRatio: z.number().min(0.01).max(1).default(DEFAULT_AUTOTUNE.parallelRatio),
-          cohesiveRatio: z.number().min(0.01).max(1).default(DEFAULT_AUTOTUNE.cohesiveRatio),
-          minDelta: z.number().min(0).default(DEFAULT_AUTOTUNE.minDelta),
-          minGapMs: z.number().min(0).default(DEFAULT_AUTOTUNE.minGapMs),
-        }).default(DEFAULT_AUTOTUNE),
-        // A 路径并行批次窗口（总开关/批次窗/单批上限；无池参数——执行机制在 preset 的 delegation 组）。
-        // settings 热更即时生效（MatrixBridge settings/updated 分发 parallel 键 → syncParallelFromSettings）。
-        parallel: z.object({
-          enabled: z.boolean().default(DEFAULT_PARALLEL.enabled),
-          batchWindowSecs: z.number().min(2).max(60).default(DEFAULT_PARALLEL.batchWindowSecs),
-          maxBatchItems: z.number().min(2).max(8).default(DEFAULT_PARALLEL.maxBatchItems),
-        }).default(DEFAULT_PARALLEL),
-        timelineEnabled: z.boolean().default(true),
-        timelineInject: z.boolean().default(true),
-        timelineCrossRoom: z.boolean().default(false),
-        timelineCap: z.number().default(500),
-        testRoomPrefix: z.string().default('【测试】'),
-        twinModeRoomPrefix: z.string().default(''),
-        secretaryGroupDefault: z.boolean().default(true),
-        secretaryDmDefault: z.boolean().default(false),
-        taskClarifyTimeoutSecs: z.number().default(120),
-        taskConfirmTimeoutSecs: z.number().default(600),
-        secretaryDecisionTimeoutSecs: z.number().default(180),
-        // 运行时只读镜像（非用户配置）：自我时间线数据源。
-        timelineSnapshot: z.any().default({ entries: [], updatedAt: 0 }),
-        // 运行时只读镜像（非用户配置）：主人收件箱（待批请示/汇报）。
-        ownerInbox: z.any().default(emptyOwnerInbox()),
-        // 运行时只读镜像（非用户配置）：任务看板（各房间当前忙/待交付/请示中状态）。
-        taskBoard: z.any().default(emptyTaskBoard()),
-        // 运行时只读镜像（非用户配置）：岗位看板（已安装岗位/每房间岗位/默认岗位）。
-        jobBoard: z.any().default(emptyJobBoard()),
-        // Client→Host 管理命令（非用户配置）：Host 处理后清零，防重启重放。
-        timelineOps: z.any().default(emptyTimelineOps()),
-        // Client→Host 主人决策命令（非用户配置）：Host 处理后清零。
-        ownerDecisionOps: z.any().default(emptyOwnerDecisionOps()),
-        // Client→Host 岗位切换命令（非用户配置）：Host 处理后清零。
-        jobSwitchOps: z.any().default(emptyJobSwitchOps()),
-      }), { applies: 'live', base: pickMatrixBase(config) })
-      const applyUser = (user: unknown, notify = true): void => {
-        current = mergeMatrixConfig(config, (user ?? {}) as Record<string, unknown>)
-        // 配置变化通知（供 index.ts 驱动 bridge 启停：token 缺失时保持插件存活，配置好后自动恢复）。
-        // 首次同步 merge（register 内的 scope.get()）不通知：index.ts 拿到 merged 后会自行做
-        // 初始启停判定；且此刻 index.ts 的 settingsHandle 仍处 TDZ（const 尚未赋值），
-        // 提前通知会抛 "Cannot access 'settingsHandle' before initialization"，导致
-        // snapshotScope 与 watch 注册被跳过、快照机制整体失效。后续 watch 变更才通知。
-        if (notify && onConfigChange !== undefined) onConfigChange(current)
-        // 检测时间线管理命令（Client→Host）。
-        const ops = (user as Record<string, unknown> | undefined)?.timelineOps as TimelineOps | undefined
-        if (ops !== undefined && onTimelineOps !== undefined) {
-          const active = ops.clearSeq !== 0 || (Array.isArray(ops.removeIds) && ops.removeIds.length > 0)
-          if (active) onTimelineOps(ops)
-        }
-        // 检测主人决策命令（Client→Host）。
-        const dop = (user as Record<string, unknown> | undefined)?.ownerDecisionOps as OwnerDecisionOps | undefined
-        if (dop !== undefined && dop.seq !== 0 && dop.id !== '' && onOwnerDecisionOps !== undefined) {
-          onOwnerDecisionOps(dop)
-        }
-        // 检测岗位切换命令（Client→Host）。
-        const jop = (user as Record<string, unknown> | undefined)?.jobSwitchOps as JobSwitchOps | undefined
-        if (jop !== undefined && jop.seq !== 0 && jop.presetId !== '' && onJobSwitchOps !== undefined) {
-          onJobSwitchOps(jop)
-        }
-      }
-      applyUser(scope.get(), false)
-      snapshotScope = scope
-      const unsub = scope.watch((next) => applyUser(next, true))
-      disposers.push(unsub)
-      fileLog(config.stateDir, `settings register OK: ns=${MATRIX_NS} snapshotScope set`)
-    } catch (error) {
-      ctx.logger.warn('[dsh-matrix-agent] matrix settings unavailable: %s', error instanceof Error ? error.message : String(error))
-      fileLog(config.stateDir, `settings register FAILED: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  } else {
-    fileLog(config.stateDir, 'settings service unavailable (ctx.get("settings") === undefined); snapshots will NOT be published')
+  // 0.1.7 用户配置热更：settings 页编辑 volatile 字段 → cordis-plugin-loader 更新 Volatile ref
+  // → emit "loader/volatile-update"（paths）。config 对象引用稳定，重跑 plainMatrixConfig 得最新值。
+  let volatileUnsub: (() => void) | undefined
+  try {
+    volatileUnsub = (ctx.on as (event: string, cb: (paths: unknown) => void) => () => void)('loader/volatile-update', (paths: unknown) => {
+      const next = plainMatrixConfig(config)
+      current = next
+      fileLog(next.stateDir, `loader/volatile-update: paths=${Array.isArray(paths) ? paths.join(',') : String(paths)}`)
+      if (onConfigChange !== undefined) onConfigChange(next)
+    })
+    disposers.push(volatileUnsub)
+  } catch (error) {
+    ctx.logger.warn('[dsh-matrix-agent] loader/volatile-update listener failed: %s', error instanceof Error ? error.message : String(error))
   }
 
-  /** 防抖写时间线快照（运行时镜像，非用户配置）。 */
+  // —— 运行时镜像 / 命令通道：0.1.7 降级为内存态（接口保留，后续 Typert RPC 重构）——
+  // 这些镜像原来靠 settings namespace 的 snapshotScope.update() 写回给 client 读；
+  // 0.1.7 里 settings 只能写 volatile 字段（这些是运行时数据，非用户配置），故先不传输。
+  // Host 内存缓存保留最近一次快照，接口签名不变，待 Typert RPC（ctx.remote）补齐后恢复传输。
+  let timelineCache: { entries: unknown[]; updatedAt: number } | undefined
+  let ownerInboxCache: OwnerInboxSnapshot | undefined
+  let taskBoardCache: TaskBoardSnapshot | undefined
+  let jobBoardCache: JobBoardSnapshot | undefined
+
   const updateTimelineSnapshot = (snapshot: { entries: unknown[]; updatedAt: number }): void => {
-    pendingTimeline = snapshot
-    clearTimeout(timelineTimer)
-    timelineTimer = setTimeout(() => {
-      const next = pendingTimeline
-      pendingTimeline = undefined
-      if (next === undefined || snapshotScope === undefined) {
-        fileLog(config.stateDir, `timeline snapshot SKIPPED: next=${next !== undefined} snapshotScope=${snapshotScope !== undefined}`)
-        return
-      }
-      snapshotScope.update({ timelineSnapshot: next }).then(() => {
-        fileLog(config.stateDir, `timeline snapshot published entries=${next.entries.length}`)
-      }).catch((error: unknown) => {
-        ctx.logger.warn('[dsh-matrix-agent] timeline snapshot write failed: %s', error instanceof Error ? error.message : String(error))
-        fileLog(config.stateDir, `timeline snapshot write FAILED: ${error instanceof Error ? error.message : String(error)}`)
-      })
-    }, 300)
+    timelineCache = snapshot
+    fileLog(current.stateDir, `timeline snapshot cached (in-memory) entries=${snapshot.entries.length}`)
   }
-
-  /** 清零时间线管理命令（Host 处理后调用，防重启重放）。 */
-  const clearTimelineOps = (): void => {
-    if (snapshotScope === undefined) return
-    snapshotScope.update({ timelineOps: emptyTimelineOps() }).catch(() => {})
-  }
-
-  /** 清零主人决策命令（Host 处理后调用，防重启重放）。 */
-  const clearOwnerDecisionOps = (): void => {
-    if (snapshotScope === undefined) return
-    snapshotScope.update({ ownerDecisionOps: emptyOwnerDecisionOps() }).catch(() => {})
-  }
-
-  /** 防抖写主人收件箱快照（运行时镜像，非用户配置）。 */
   const updateOwnerInbox = (snapshot: OwnerInboxSnapshot): void => {
-    pendingOwnerInbox = snapshot
-    clearTimeout(ownerInboxTimer)
-    ownerInboxTimer = setTimeout(() => {
-      const next = pendingOwnerInbox
-      pendingOwnerInbox = undefined
-      if (next === undefined || snapshotScope === undefined) {
-        fileLog(config.stateDir, `ownerInbox SKIPPED: next=${next !== undefined} snapshotScope=${snapshotScope !== undefined}`)
-        return
-      }
-      snapshotScope.update({ ownerInbox: next }).then(() => {
-        fileLog(config.stateDir, `ownerInbox published items=${next.items.length}`)
-      }).catch((error: unknown) => {
-        ctx.logger.warn('[dsh-matrix-agent] ownerInbox write failed: %s', error instanceof Error ? error.message : String(error))
-        fileLog(config.stateDir, `ownerInbox write FAILED: ${error instanceof Error ? error.message : String(error)}`)
-      })
-    }, 300)
+    ownerInboxCache = snapshot
+    fileLog(current.stateDir, `ownerInbox cached (in-memory) items=${snapshot.items.length}`)
   }
-
-  /** 防抖写任务看板快照（运行时镜像，非用户配置）。 */
   const updateTaskBoard = (snapshot: TaskBoardSnapshot): void => {
-    pendingTaskBoard = snapshot
-    clearTimeout(taskBoardTimer)
-    taskBoardTimer = setTimeout(() => {
-      const next = pendingTaskBoard
-      pendingTaskBoard = undefined
-      if (next === undefined || snapshotScope === undefined) {
-        fileLog(config.stateDir, `taskBoard SKIPPED: next=${next !== undefined} snapshotScope=${snapshotScope !== undefined}`)
-        return
-      }
-      snapshotScope.update({ taskBoard: next }).then(() => {
-        fileLog(config.stateDir, `taskBoard published rows=${next.rows.length}`)
-      }).catch((error: unknown) => {
-        ctx.logger.warn('[dsh-matrix-agent] taskBoard write failed: %s', error instanceof Error ? error.message : String(error))
-        fileLog(config.stateDir, `taskBoard write FAILED: ${error instanceof Error ? error.message : String(error)}`)
-      })
-    }, 300)
+    taskBoardCache = snapshot
+    fileLog(current.stateDir, `taskBoard cached (in-memory) rows=${snapshot.rows.length}`)
   }
-
-  /** 防抖写岗位看板快照（运行时镜像，非用户配置）。 */
   const updateJobBoard = (snapshot: JobBoardSnapshot): void => {
-    pendingJobBoard = snapshot
-    clearTimeout(jobBoardTimer)
-    jobBoardTimer = setTimeout(() => {
-      const next = pendingJobBoard
-      pendingJobBoard = undefined
-      if (next === undefined || snapshotScope === undefined) {
-        fileLog(config.stateDir, `jobBoard SKIPPED: next=${next !== undefined} snapshotScope=${snapshotScope !== undefined}`)
-        return
-      }
-      snapshotScope.update({ jobBoard: next }).then(() => {
-        fileLog(config.stateDir, `jobBoard published presets=${next.installedPresets.length} rows=${next.rows.length}`)
-      }).catch((error: unknown) => {
-        ctx.logger.warn('[dsh-matrix-agent] jobBoard write failed: %s', error instanceof Error ? error.message : String(error))
-        fileLog(config.stateDir, `jobBoard write FAILED: ${error instanceof Error ? error.message : String(error)}`)
-      })
-    }, 300)
+    jobBoardCache = snapshot
+    fileLog(current.stateDir, `jobBoard cached (in-memory) presets=${snapshot.installedPresets.length} rows=${snapshot.rows.length}`)
   }
+  // 命令通道清零：命令经 Typert RPC 直发（Client→Host），不再写 settings，故此处保持 no-op。
+  const clearTimelineOps = (): void => {}
+  const clearOwnerDecisionOps = (): void => {}
+  const clearJobSwitchOps = (): void => {}
 
-  /** 清零岗位切换命令（Host 处理后调用，防重启重放）。 */
-  const clearJobSwitchOps = (): void => {
-    if (snapshotScope === undefined) return
-    snapshotScope.update({ jobSwitchOps: emptyJobSwitchOps() }).catch(() => {})
-  }
+  // 镜像 getter：供 Typert workbench service 读取最新快照（避免两处 cache 不同步）。
+  const getTimelineSnapshot = (): { entries: unknown[]; updatedAt: number } =>
+    timelineCache ?? { entries: [], updatedAt: 0 }
+  const getOwnerInboxSnapshot = (): OwnerInboxSnapshot =>
+    ownerInboxCache ?? emptyOwnerInbox()
+  const getTaskBoardSnapshot = (): TaskBoardSnapshot =>
+    taskBoardCache ?? emptyTaskBoard()
+  const getJobBoardSnapshot = (): JobBoardSnapshot =>
+    jobBoardCache ?? emptyJobBoard()
 
   return {
     merged: current,
     dispose: () => {
-      clearTimeout(timelineTimer)
-      clearTimeout(ownerInboxTimer)
-      clearTimeout(taskBoardTimer)
-      clearTimeout(jobBoardTimer)
       for (const dispose of disposers.splice(0)) dispose()
     },
     getMerged: () => current,
@@ -627,5 +362,9 @@ export function registerMatrixSettings(
     clearTimelineOps,
     clearOwnerDecisionOps,
     clearJobSwitchOps,
+    getTimelineSnapshot,
+    getOwnerInboxSnapshot,
+    getTaskBoardSnapshot,
+    getJobBoardSnapshot,
   }
 }

@@ -57,7 +57,7 @@ import { MemberStore } from './member-store.js'
 import { InviteStore } from './invite-store.js'
 import type { PendingInvite } from './invite-store.js'
 import type { TimelineOps, OwnerInboxSnapshot, OwnerInboxItem, OwnerDecisionOps, TaskBoardSnapshot, TaskBoardRow, JobBoardRow, JobBoardSnapshot, JobSwitchOps } from './settings.js'
-import { MATRIX_NS, emptyJobBoard } from './settings.js'
+import { emptyJobBoard } from './settings.js'
 import { TwinTimeline } from './timeline.js'
 import type { TimelineKind } from './timeline.js'
 
@@ -429,11 +429,13 @@ export class AccountBridge {
   readonly userId: string
   readonly isMain: boolean
   readonly owner?: string
-  private readonly respondToAll: boolean
+  /** 分身的 respondToAll（digitalTwins[i].respondToAll，部署固定，不随主配置热更）。 */
+  private readonly twinRespondToAll: boolean
   private readonly agentOptions: AgentOptions
 
   private readonly ctx: Context
-  private readonly config: Config
+  /** 可变 config：volatile-update 热更后经 applyConfigUpdate() 原地替换引用。 */
+  private config: Config
   private readonly state: BridgeState
   private readonly authStore: AuthStore
   private readonly channel: Channel
@@ -497,9 +499,9 @@ export class AccountBridge {
   /** 自上次倾向切换以来滚入窗口的新消息计数（整窗翻新判定 windowFresh 用）。 */
   private readonly roomShapeFreshCount = new Map<string, number>()
   /**
-   * auto 阈值内存镜像：构造时从 config.autoTune 装载，settings 用户层热更经
-   * syncAutoTuneFromSettings 更新（同 roomModesMem 模式——settings/updated 事件驱动，
-   * 不依赖 config 对象引用是否更新）。autoTune() 统一读此镜像。
+   * auto 阈值内存镜像：构造时从 config.autoTune 装载。autoTune 为部署固定（非 volatile）
+   * 参数（0.1.7 无设置页热更场景），故仅装载一次，autoTune() 统一读此镜像。
+   * （syncAutoTuneFromSettings 保留但不再被订阅调用，作未来恢复热更的现成实现。）
    */
   private autoTuneMem: AutoTune = autoTuneOf({ autoTune: undefined })
 
@@ -822,8 +824,8 @@ export class AccountBridge {
   private readonly roomLastOutboundAt = new Map<string, number>()
 
   // ── A 路径：并行「批次收集窗口」运行时（只做输入预处理；执行机制在 preset+skill 的 subagent）──
-  /** 并行批次窗口配置内存镜像：构造时从 config.parallel 装载，settings 用户层热更经
-   *  syncParallelFromSettings 更新（同 roomModesMem 模式——不依赖 config 对象引用是否更新）。 */
+  /** 并行批次窗口配置内存镜像：构造时从 config.parallel 装载（部署固定非 volatile，无热更场景）。
+   *  （syncParallelFromSettings 保留但不再被订阅调用，作未来恢复热更的现成实现。） */
   private parallelMem: ParallelOpts = DEFAULT_PARALLEL
 
   /** 并行批次窗口是否启用（本账号级总开关：config.parallel.enabled；false=提示层全关）。 */
@@ -938,17 +940,26 @@ export class AccountBridge {
     this.chatlog = new ChatLog(config.stateDir)
     this.memberStore = new MemberStore(config.stateDir)
     this.inviteStore = new InviteStore(config.stateDir)
-    // 群工作模式内存镜像：初始装载 yml/config 的显式钉死（设置页手动钉死经 merge 也在此）。
-    // config.roomModes 键可为房间 id 或群名；运行中口播指令写入后经防抖回调写回 settings。
+    // 群工作模式内存镜像：初始装载 config 的显式钉死（base 静态权威），再叠加 state.json
+    // 的运行时口播覆盖（0.1.7 起替代 settings 用户层，见 store.ts roomModes）。
     for (const [key, mode] of Object.entries(normalizeRoomModes(config.roomModes))) {
       this.roomModesMem.set(key, mode)
       this.roomModesBaseKeys.add(key)
     }
-    // per-room 岗位覆盖内存镜像：初始装载 config.roomPresets 的显式钉死（键=roomId/群名）。
+    for (const [key, mode] of Object.entries(normalizeRoomModes(this.state.roomModes()))) {
+      if (this.roomModesBaseKeys.has(key)) continue
+      this.roomModesMem.set(key, mode)
+    }
+    // per-room 岗位覆盖内存镜像：初始装载 config.roomPresets 的显式钉死（base 静态权威），
+    // 再叠加 state.json 的运行时口播覆盖。
     for (const [key, presetId] of Object.entries(config.roomPresets ?? {})) {
       if (key === '' || presetId.trim() === '') continue
       this.roomPresetsMem.set(key, presetId)
       this.roomPresetsBaseKeys.add(key)
+    }
+    for (const [key, presetId] of Object.entries(this.state.roomPresets())) {
+      if (key === '' || presetId.trim() === '' || this.roomPresetsBaseKeys.has(key)) continue
+      this.roomPresetsMem.set(key, presetId)
     }
     // auto 阈值内存镜像：初始装载 config.autoTune（缺省回退出厂默认）。
     this.autoTuneMem = autoTuneOf(config)
@@ -961,9 +972,9 @@ export class AccountBridge {
     this.userId = account.userId
     this.isMain = account.userId === config.userId
     this.owner = account.owner !== '' ? account.owner : (this.isMain ? config.owner : undefined)
-    // 响应策略：完全由配置决定（主账号 Schema 默认 true，分身默认 false）。
-    // 不再强制主账号为 true，用户可显式设 false 让主账号也只响应 @ 自己的消息。
-    this.respondToAll = account.respondToAll
+    // 响应策略：主账号运行时读 config.respondToAll（volatile，可热更）；分身用 digitalTwins
+    // 配置的 respondToAll（部署固定）。见 respondToAll getter。
+    this.twinRespondToAll = account.respondToAll
     this.agentOptions = {
       provider: account.provider !== '' ? account.provider : config.provider,
       model: account.model !== '' ? account.model : config.model,
@@ -1122,6 +1133,11 @@ export class AccountBridge {
     })
   }
 
+  /** volatile 字段热更后更新本账号的 config 引用（respondToAll/allowAllUsers 等运行时读取生效）。 */
+  applyConfigUpdate(next: Config): void {
+    this.config = next
+  }
+
   private async connectWithRetry(): Promise<void> {
     let attempt = 0
     for (;;) {
@@ -1152,6 +1168,14 @@ export class AccountBridge {
   }
 
   /** ---------- 身份与权限 ---------- */
+
+  /**
+   * 本账号是否响应群里所有消息（运行时读）：主账号读 config.respondToAll（volatile，可热更），
+   * 分身读 digitalTwins 配置的 respondToAll（部署固定，twinRespondToAll）。
+   */
+  private get respondToAll(): boolean {
+    return this.isMain ? this.config.respondToAll : this.twinRespondToAll
+  }
 
   private authorized(sender: string): boolean {
     if (this.config.allowAllUsers) return true
@@ -2372,7 +2396,7 @@ export class AccountBridge {
    * 与 setup 的 agentCtx 无关；execute 时通过 exec.agent.id 反查房间。
    */
 
-  /** 读取「用户选的默认岗位」：agent-presets settings namespace 的 default 字段（agentPresets.defaultId 读它）。
+  /** 读取「用户选的默认岗位」：agent-presets 的 defaultId（= selectedDefault ?? default）。
    *  未设置 / 服务不可用 → undefined（回退到 config.agentPreset）。 */
   private defaultPresetId(): string | undefined {
     try {
@@ -3553,33 +3577,15 @@ export class AccountBridge {
     }, 1000)
   }
 
-  /** 立即把一批岗位增量写入 settings 用户层（供 stop/冲刷时兜底）。 */
+  /** 立即把一批岗位增量写入状态文件（0.1.7：替代 settings 用户层，供 stop/冲刷时兜底）。 */
   private flushRoomPresetsNow(dirty: Map<string, string | undefined>): void {
     if (dirty.size === 0) return
-    const settings = this.ctx.get('settings') as
-      | { mutate?(ns: string, ops: Array<{ op: 'set' | 'unset'; path: string[]; value?: unknown }>): Promise<void> }
-      | undefined
-    if (settings?.mutate === undefined) {
-      this.diag.log('roomPresets persist skipped: settings service unavailable (内存态已生效)')
-      return
-    }
-    const ops: Array<{ op: 'set' | 'unset'; path: string[]; value?: unknown }> = []
-    for (const [key, presetId] of dirty) {
-      if (presetId !== undefined && presetId !== '') {
-        ops.push({ op: 'set', path: ['roomPresets', key], value: presetId })
-      } else {
-        ops.push({ op: 'unset', path: ['roomPresets', key] })
-      }
-    }
     try {
-      void settings.mutate(MATRIX_NS, ops).then(() => {
-        this.diag.log(`roomPresets persisted ns=${MATRIX_NS} ops=${ops.length}`)
-      }).catch((error: unknown) => {
-        this.ctx.logger.warn('[dsh-matrix-agent] roomPresets persist failed: %s', messageOf(error))
-        this.diag.log(`roomPresets persist FAILED: ${messageOf(error)}`)
-      })
+      this.state.applyRoomPresetDeltas(dirty)
+      this.diag.log(`roomPresets persisted to state.json ops=${dirty.size}`)
     } catch (error) {
-      this.ctx.logger.warn('[dsh-matrix-agent] roomPresets persist threw: %s', messageOf(error))
+      this.ctx.logger.warn('[dsh-matrix-agent] roomPresets persist failed: %s', messageOf(error))
+      this.diag.log(`roomPresets persist FAILED: ${messageOf(error)}`)
     }
   }
 
@@ -3756,35 +3762,15 @@ export class AccountBridge {
     }, 1000)
   }
 
-  /** 立即把一批群模式增量写入 settings 用户层（供 stop/冲刷时兜底）。 */
+  /** 立即把一批群模式增量写入状态文件（0.1.7：替代 settings 用户层，供 stop/冲刷时兜底）。 */
   private flushRoomModesNow(dirty: Map<string, RoomMode | undefined>): void {
     if (dirty.size === 0) return
-    const settings = this.ctx.get('settings') as
-      | {
-          mutate?(ns: string, ops: Array<{ op: 'set' | 'unset'; path: string[]; value?: unknown }>): Promise<void>
-        }
-      | undefined
-    if (settings?.mutate === undefined) {
-      this.diag.log('roomModes persist skipped: settings service unavailable (内存态已生效)')
-      return
-    }
-    const ops: Array<{ op: 'set' | 'unset'; path: string[]; value?: unknown }> = []
-    for (const [key, mode] of dirty) {
-      if (mode !== undefined) {
-        ops.push({ op: 'set', path: ['roomModes', key], value: mode })
-      } else {
-        ops.push({ op: 'unset', path: ['roomModes', key] })
-      }
-    }
     try {
-      void settings.mutate(MATRIX_NS, ops).then(() => {
-        this.diag.log(`roomModes persisted ns=${MATRIX_NS} ops=${ops.length}`)
-      }).catch((error: unknown) => {
-        this.ctx.logger.warn('[dsh-matrix-agent] roomModes persist failed: %s', messageOf(error))
-        this.diag.log(`roomModes persist FAILED: ${messageOf(error)}`)
-      })
+      this.state.applyRoomModeDeltas(dirty)
+      this.diag.log(`roomModes persisted to state.json ops=${dirty.size}`)
     } catch (error) {
-      this.ctx.logger.warn('[dsh-matrix-agent] roomModes persist threw: %s', messageOf(error))
+      this.ctx.logger.warn('[dsh-matrix-agent] roomModes persist failed: %s', messageOf(error))
+      this.diag.log(`roomModes persist FAILED: ${messageOf(error)}`)
     }
   }
 
@@ -4855,12 +4841,12 @@ export interface MatrixBridgeOptions extends Config {
  */
 export class MatrixBridge {
   private readonly ctx: Context
-  private readonly config: MatrixBridgeOptions
+  /** 可变 config：volatile-update 热更后经 applyConfigUpdate() 原地替换引用。 */
+  private config: MatrixBridgeOptions
   private readonly authStore: AuthStore
   private readonly accounts: AccountBridge[] = []
   private disposeEvents: (() => void) | undefined
   private disposeApproval: (() => void) | undefined
-  private disposeSettingsWatch: (() => void) | undefined
   /** 岗位看板聚合发布定时器（防抖）。 */
   private jobBoardTimer: ReturnType<typeof setTimeout> | undefined
   /** 已安装岗位缓存（agentPresets.list() 结果），供 jobBoard 聚合。 */
@@ -4963,36 +4949,8 @@ export class MatrixBridge {
       }
     })
 
-    // ── 群工作模式热更：settings 用户层 roomModes / autoTune 被外部（设置页/其它账号）
-    // 修改后，广播给各账号刷新内存镜像（口播写入的回声也走这里，幂等覆盖同值键）。
-    try {
-      this.disposeSettingsWatch = this.ctx.on('settings/updated' as never, ((ns: unknown, next: unknown) => {
-        if (ns !== MATRIX_NS) return
-        const patch = next as Record<string, unknown> | undefined
-        const roomModes = patch?.roomModes
-        if (roomModes !== undefined) {
-          for (const account of this.accounts) account.syncRoomModesFromSettings(roomModes)
-        }
-        // per-room 岗位覆盖热更（键=roomId/群名，值=岗位 preset id）。
-        const roomPresets = patch?.roomPresets
-        if (roomPresets !== undefined) {
-          for (const account of this.accounts) account.syncRoomPresetsFromSettings(roomPresets)
-        }
-        // 阶段 3：auto 阈值热更（阈值可配可热更；产出的倾向值永不写 settings）。
-        const autoTune = patch?.autoTune
-        if (autoTune !== undefined) {
-          for (const account of this.accounts) account.syncAutoTuneFromSettings(autoTune)
-        }
-        // A 路径：并行批次窗口参数热更（enabled/batchWindowSecs/maxBatchItems）。
-        const parallel = patch?.parallel
-        if (parallel !== undefined) {
-          for (const account of this.accounts) account.syncParallelFromSettings(parallel)
-        }
-      }) as never)
-      this.ctx.logger.info('[dsh-matrix-agent] settings/updated subscribed (roomModes/autoTune/parallel hot-apply)')
-    } catch (e) {
-      this.ctx.logger.warn('[dsh-matrix-agent] settings/updated subscribe failed: %s', e instanceof Error ? e.message : String(e))
-    }
+    // 注：0.1.7 下 roomModes/roomPresets 已改走状态文件（state.json）持久化，autoTune/parallel
+    // 为部署固定（非 volatile）参数，均无「设置页热更」场景，故不再订阅 settings 热更事件。
 
     // ── 任务跟进（阶段 1）：agent/status（idle↔running）→ 分发各账号处理 ──
     try {
@@ -5056,7 +5014,7 @@ export class MatrixBridge {
 
   /**
    * 分发岗位切换命令到各账号（设置页切换岗位），执行后清零命令字段并重发岗位看板。
-   * ops.roomId 为空 = 修改全局默认岗位（写入 agent-presets settings namespace 的 default）；
+   * ops.roomId 为空 = 修改全局默认岗位（写入 agent-presets 的 selectedDefault 字段）；
    * 非空 = 修改该房间的 roomPresets（per-room 钉死）。已产出内容的会话切换岗位需新建会话
    * 并同步历史（由 account.switchRoomPreset 处理），见其内部语义。
    */
@@ -5067,7 +5025,7 @@ export class MatrixBridge {
       return
     }
     if (ops.roomId.trim() === '') {
-      // 全局默认岗位：写 agent-presets settings namespace 的 default 字段。
+      // 全局默认岗位：写 agent-presets 的 selectedDefault 字段。
       await this.setDefaultPreset(targetPreset)
     } else {
       for (const account of this.accounts) {
@@ -5081,7 +5039,7 @@ export class MatrixBridge {
     this.scheduleJobBoardPublish()
   }
 
-  /** 写全局默认岗位：经 agent-presets settings namespace 的 default 字段（agentPresets.defaultId 读它）。 */
+  /** 写全局默认岗位：经 agent-presets 的 selectedDefault 字段（0.1.7 volatile，agentPresets.defaultId 读它）。 */
   private async setDefaultPreset(presetId: string): Promise<void> {
     try {
       const presets = this.ctx.get('agentPresets') as
@@ -5103,7 +5061,7 @@ export class MatrixBridge {
       return
     }
     try {
-      await settings.mutate('agent-presets', [{ op: 'set', path: ['default'], value: presetId }])
+      await settings.mutate('agent-presets', [{ op: 'set', path: ['selectedDefault'], value: presetId }])
       this.ctx.logger.info('[dsh-matrix-agent] default preset set to %s', presetId)
     } catch (error) {
       this.ctx.logger.warn('[dsh-matrix-agent] setDefaultPreset failed: %s', messageOf(error))
@@ -5120,7 +5078,7 @@ export class MatrixBridge {
     }, 300)
   }
 
-  /** 读取「用户选的默认岗位」：agent-presets settings namespace 的 default 字段（agentPresets.defaultId 读它）。
+  /** 读取「用户选的默认岗位」：agent-presets 的 defaultId（= selectedDefault ?? default）。
    *  未设置 / 服务不可用 → undefined（回退到 config.agentPreset）。 */
   private defaultPresetId(): string | undefined {
     try {
@@ -5170,8 +5128,6 @@ export class MatrixBridge {
     }
     this.disposeApproval?.()
     this.disposeApproval = undefined
-    this.disposeSettingsWatch?.()
-    this.disposeSettingsWatch = undefined
     if (this.jobBoardTimer !== undefined) {
       clearTimeout(this.jobBoardTimer)
       this.jobBoardTimer = undefined
@@ -5179,5 +5135,14 @@ export class MatrixBridge {
     await Promise.allSettled(this.accounts.map((account) => account.stop()))
     this.accounts.length = 0
     await this.authStore.save().catch(() => {})
+  }
+
+  /** volatile 字段热更后更新配置引用：传播到各 AccountBridge，使 respondToAll/allowAllUsers 等运行时读取生效。 */
+  applyConfigUpdate(next: Config): void {
+    // 保留 MatrixBridgeOptions 的额外字段（回调/接缝），只覆盖 Config 部分。
+    this.config = { ...this.config, ...next }
+    for (const account of this.accounts) {
+      account.applyConfigUpdate({ ...this.config })
+    }
   }
 }

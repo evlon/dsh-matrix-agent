@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
+import type { RoomMode } from './config.js'
 
 export interface RoomBinding {
   readonly sessionId: string
@@ -35,6 +36,17 @@ interface StateFile {
   roomSessionEpochs?: Record<string, number>
   /** 房间切换岗位时待同步的历史摘要（roomId → 摘要文本）。新建会话后注入并清除。 */
   roomJobSwitchSummaries?: Record<string, string>
+  /**
+   * per-room 岗位覆盖（roomId/群名 → 岗位 preset id）：口播指令/设置页钉死的运行时数据。
+   * 0.1.7 起不再写 settings 用户层（settings 只收 volatile 用户配置，而这些是运行时状态），
+   * 改由本状态文件持久化（与 roomCwds/roomSessionEpochs 同级语义）。
+   */
+  roomPresets?: Record<string, string>
+  /**
+   * per-room 群工作模式覆盖（roomId/群名 → 显式钉死模式）：口播指令写入的运行时数据，
+   * 同上持久化到状态文件，而非 settings。
+   */
+  roomModes?: Record<string, RoomMode>
 }
 
 /** 去重环最多保留的事件 id 数。Matrix 事件 id 全局唯一，重启后重放窗口有限。 */
@@ -80,6 +92,8 @@ export class BridgeState {
           ...(typeof parsed.roomCwds === 'object' && parsed.roomCwds !== null && !nsChanged ? { roomCwds: parsed.roomCwds as Record<string, string> } : {}),
           ...(typeof parsed.roomSessionEpochs === 'object' && parsed.roomSessionEpochs !== null && !nsChanged ? { roomSessionEpochs: parsed.roomSessionEpochs as Record<string, number> } : {}),
           ...(typeof parsed.roomJobSwitchSummaries === 'object' && parsed.roomJobSwitchSummaries !== null && !nsChanged ? { roomJobSwitchSummaries: parsed.roomJobSwitchSummaries as Record<string, string> } : {}),
+          ...(typeof parsed.roomPresets === 'object' && parsed.roomPresets !== null && !nsChanged ? { roomPresets: parsed.roomPresets as Record<string, string> } : {}),
+          ...(typeof parsed.roomModes === 'object' && parsed.roomModes !== null && !nsChanged ? { roomModes: parsed.roomModes as Record<string, RoomMode> } : {}),
         }
       }
     } catch (error) {
@@ -166,6 +180,42 @@ export class BridgeState {
       delete this.data.roomJobSwitchSummaries[roomId]
       this.scheduleSave()
     }
+  }
+
+  // ---- per-room 岗位覆盖 / 群工作模式（口播指令运行时数据，0.1.7 起替代 settings 用户层） ----
+
+  /** 读取全部 per-room 岗位覆盖（roomId/群名 → preset id）。 */
+  roomPresets(): Record<string, string> {
+    return this.data.roomPresets ?? {}
+  }
+
+  /** 读取全部 per-room 群工作模式覆盖（roomId/群名 → mode）。 */
+  roomModes(): Record<string, RoomMode> {
+    return this.data.roomModes ?? {}
+  }
+
+  /** 批量写入 per-room 岗位覆盖（增量合并：undefined 值删除该键，其余覆盖）。 */
+  applyRoomPresetDeltas(deltas: Map<string, string | undefined>): void {
+    if (deltas.size === 0) return
+    const next: Record<string, string> = { ...(this.data.roomPresets ?? {}) }
+    for (const [key, presetId] of deltas) {
+      if (presetId === undefined || presetId === '') delete next[key]
+      else next[key] = presetId
+    }
+    this.data.roomPresets = next
+    this.scheduleSave()
+  }
+
+  /** 批量写入 per-room 群工作模式覆盖（增量合并：undefined 值删除该键，其余覆盖）。 */
+  applyRoomModeDeltas(deltas: Map<string, RoomMode | undefined>): void {
+    if (deltas.size === 0) return
+    const next: Record<string, RoomMode> = { ...(this.data.roomModes ?? {}) }
+    for (const [key, mode] of deltas) {
+      if (mode === undefined) delete next[key]
+      else next[key] = mode
+    }
+    this.data.roomModes = next
+    this.scheduleSave()
   }
 
   // ---- 房间工作目录绑定 ----

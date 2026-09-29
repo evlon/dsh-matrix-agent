@@ -20,19 +20,16 @@
         # 工作责任负责人：真实人账号 @xxxxxxx（仅在 Matrix 客户端登录）
         # 设置后：审批/吊销仅 @xxxxxxx 可应答；其消息也被放行
         owner: '@xxxxxxx:im-ipm.ict.cmcc'
-        # 响应房间所有消息（分身与专人/其他分身/真人同事协作）
+        # 响应房间所有消息（分身与专人/其他分身/真人同事协作）——volatile 可热改，
+        # 此处写 false 作为「分身默认只响应 @」的部署初始值（覆盖 schema default true）。
         respondToAll: false
-        # 白名单为空且 allowAllUsers=false 时拒绝所有入站消息（fail closed）
-        allowedUserIds: []
+        # 允许任意用户（测试环境 true）——volatile 可热改，此处写 true 作部署初始值。
+        # 生产 fail-closed 建议删此行回退 schema default false。
         allowAllUsers: true
         provider: 'codebuddy'
-        model: 'deepseek-v4-flash'
-        # room agent 挂载的岗位 preset：决定工具集与角色提示。
-        # 安全兜底：用 'standard'（内置必然存在），绝不写死某个岗位——岗位由「分身工作台 →
-        # 岗位 tab」或激活时选的默认岗位（agent-presets.default）动态注入；写死某岗位会因
-        # 该岗位未安装/已下架而 fatal load failure（历史教训：写死 pm 导致全新安装崩溃）。
-        agentPreset: 'standard'
-        chunkMaxChars: 4000
+        # 以下 volatile 字段（model/agentPreset/chunkMaxChars/allowedUserIds）不写进 patch：
+        # 其 schema default 已是合理通用值，设置页编辑后写盘到独立 patch 层覆盖。
+        # model 默认 deepseek-v4-flash、agentPreset 默认 standard（见 config.ts）。
         mergeTimeoutSecs: 5
         approvalTimeoutSecs: 300
         stateDir: '.dsh-matrix'

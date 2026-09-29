@@ -21,10 +21,13 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { createRequire } from 'node:module'
+import { appendFileSync, mkdirSync } from 'node:fs'
+import { join } from 'node:path'
 import { MatrixBridge } from './bridge/index.js'
 import type { Config as MatrixConfig, DigitalTwinAccount } from './bridge/index.js'
-import { resolveStateDir } from './bridge/index.js'
+import { plainMatrixConfig, resolveStateDir } from './bridge/index.js'
 import { registerMatrixSettings } from './bridge/index.js'
+import { MatrixWorkbenchService } from './bridge/index.js'
 import type { TimelineOps, OwnerDecisionOps, JobSwitchOps } from './bridge/index.js'
 
 // 桥接层/支撑类型面：原 @evlon/dsh-bridge 已合并进本包，从这里转发。
@@ -48,16 +51,33 @@ function readPkgVersion(pkgName: string): string | undefined {
   }
 }
 
+/** 提取错误信息（Error 或其它抛出的值）。 */
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/** 文件诊断日志：与 settings.ts 的 fileLog 同写 stateDir/diagnostics.log。 */
+function fileLog(stateDir: string, message: string): void {
+  const line = `${new Date().toISOString()} [dsh-matrix-agent] ${message}\n`
+  try {
+    mkdirSync(stateDir, { recursive: true })
+    appendFileSync(join(stateDir, 'diagnostics.log'), line, 'utf8')
+  } catch { /* 忽略 */ }
+}
+
 export const name = 'matrix-agent'
 /**
- * 依赖：agents/tools（核心）+ settings（设置页 namespace 与快照镜像的 Host 提供者）。
- * 声明 settings 后 Cordis 会等它就绪再 apply，registerMatrixSettings 的
- * ctx.get('settings') 才能拿到服务（否则返回 undefined，namespace 不注册，
- * Client 侧 settingsScope 会 status=unavailable，任务/时间线读不到）。
+ * 依赖：agents/tools（核心）+ settings（0.1.7 设置页：SettingsForms.describe() 自动投影
+ * Config 的 .volatile() 字段为表单，ns = entry id = 'matrix'，无需显式 configure）。
+ * 声明 settings 后 Cordis 会等它就绪再 apply，保证 Config volatile 字段被 settings 系统收录。
  */
 export const inject = ['agents', 'tools', 'settings']
 
 export function apply(ctx: Context, config: MatrixConfig): void {
+  // 0.1.7：标 .volatile() 的字段在 config 里是 Volatile 对象。保留原始引用（热更时重新解包），
+  // 同时解包一份普通快照供 bridge/settings 使用。
+  const rawConfig = config
+  config = plainMatrixConfig(rawConfig)
   // 插件初始化：打印自身版本 + 当前依赖的 dsh 核心（@deepseek-ai/dsh-agent）版本，
   // 便于在日志里核对插件适配的 dsh 版本线（本包 peer 要求 ^0.1.7-rc.1）。
   const selfVersion = readPkgVersion('dsh-matrix-agent') ?? 'unknown'
@@ -79,21 +99,11 @@ export function apply(ctx: Context, config: MatrixConfig): void {
   } else if (config.allowedUserIds.length === 0 && !config.allowAllUsers) {
     ctx.logger.warn('[dsh-matrix-agent] no allowlist configured: all inbound messages will be rejected (fail closed)')
   }
-  // 设置层 merge：settings 用户层覆盖 yml config（若 settings 服务可用）。
-  // onTimelineOps 经引用转发：bridge 创建后把管理命令分发到账号，再清零命令字段。
+  // 设置层：0.1.7 用 Config.volatile + loader/volatile-update 热更（无 settings namespace）。
+  // 运行时镜像/命令通道经 Typert RPC（MatrixWorkbenchService）暴露给 Client。
   let bridgeRef: MatrixBridge | undefined
   let bridgeDisposer: (() => void) | undefined
-  const settingsHandle = registerMatrixSettings(ctx, config, {
-    onTimelineOps: (ops: TimelineOps) => {
-      bridgeRef?.handleTimelineOps(ops)
-    },
-    onOwnerDecisionOps: (ops: OwnerDecisionOps) => {
-      bridgeRef?.handleOwnerDecisionOps(ops)
-    },
-    onJobSwitchOps: (ops: JobSwitchOps) => {
-      void bridgeRef?.handleJobSwitchOps(ops)
-    },
-    // 配置 live 变化（含 token 从缺到有）：驱动 bridge 动态启停，无需重启。
+  const settingsHandle = registerMatrixSettings(ctx, rawConfig, {
     onConfigChange: (merged: MatrixConfig) => {
       const tok = merged.accessToken === '' ? process.env.DSH_MATRIX_TOKEN : merged.accessToken
       const ready = tok !== undefined && tok !== '' && merged.homeserverUrl !== '' && merged.userId !== ''
@@ -103,10 +113,46 @@ export function apply(ctx: Context, config: MatrixConfig): void {
       } else if (!ready && bridgeRef !== undefined) {
         ctx.logger.warn('[dsh-matrix-agent] config became incomplete, stopping Matrix bridge (设置页可继续配置)')
         stopBridge()
+      } else if (ready && bridgeRef !== undefined) {
+        // 配置完整且 bridge 已存在：volatile 字段热更（respondToAll/allowAllUsers 等运行时读取生效）。
+        bridgeRef.applyConfigUpdate(merged)
       }
     },
   })
   const mergedConfig: MatrixConfig = settingsHandle.getMerged()
+
+  // 分身工作台 Typert Remote Service：把运行时镜像/命令通道暴露给 Client（ctx.remote）。
+  // Service 构造即注册（TypertRemoteService → Service 构造调 ctx.reflect.provide），
+  // Gateway source-mode 经 @Remote 标记 + typertRemote binding 自动发现端点。
+  // Client 侧 $mount 描述符后经 ctx.remote.matrixWorkbench.* 调用。
+  let workbenchRef: MatrixWorkbenchService | undefined
+  ctx.effect(() => {
+    try {
+      workbenchRef = new MatrixWorkbenchService(ctx, {
+        getTimeline: () => settingsHandle.getTimelineSnapshot(),
+        getOwnerInbox: () => settingsHandle.getOwnerInboxSnapshot(),
+        getTaskBoard: () => settingsHandle.getTaskBoardSnapshot(),
+        getJobBoard: () => settingsHandle.getJobBoardSnapshot(),
+      })
+      ctx.logger.info('[dsh-matrix-agent] workbench Typert service registered: namespace=matrixWorkbench')
+      fileLog(config.stateDir, 'workbench Typert service registered: namespace=matrixWorkbench (7 methods)')
+    } catch (error) {
+      ctx.logger.error('[dsh-matrix-agent] workbench Typert service register failed: %s', messageOf(error))
+      fileLog(config.stateDir, `workbench Typert service register FAILED: ${messageOf(error)}`)
+    }
+    // 命令分发回调在 bridge 创建后注入；这里若 bridge 已存在则立即接上。
+    const wire = (): void => {
+      workbenchRef?.wireHandlers({
+        onTimelineOps: (ops) => bridgeRef?.handleTimelineOps(ops),
+        onOwnerDecisionOps: (ops) => bridgeRef?.handleOwnerDecisionOps(ops),
+        onJobSwitchOps: (ops) => bridgeRef?.handleJobSwitchOps(ops),
+      })
+    }
+    wire()
+    return () => {
+      workbenchRef = undefined
+    }
+  }, 'matrix-agent.workbench')
 
   function startBridge(cfg: MatrixConfig, tok: string): void {
     // 幂等守卫：初次 applyUser 的 onConfigChange 与 apply 末尾的 initToken 检查

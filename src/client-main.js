@@ -27,6 +27,7 @@
  */
 
 import React from 'react'
+import { TYPERT_REMOTE } from './client-typert.js'
 
 /**
  * 插件版本号：由 scripts/build-client.mjs 在构建时注入（esbuild define），
@@ -43,27 +44,111 @@ const PLUGIN_VERSION = typeof __PLUGIN_VERSION__ !== 'undefined' ? __PLUGIN_VERS
 const DSH_AGENT_VERSION = typeof __DSH_AGENT_VERSION__ !== 'undefined' ? __DSH_AGENT_VERSION__ : 'unknown'
 
 /** Required services (cordis fiber inject). */
-export const inject = ['slots', 'settingsScope', 'connection', 'locale']
+// dsh 0.1.7：client 侧读/写 settings 的 service 是 configForms（由
+// @deepseek-ai/dsh-client-ui-settings 提供），不是旧版臆想的 settingsScope。
+// configForms.get(entryId) 返回 ConfigFormController（entryId = Host 插件 entry id = 'matrix'）。
+// remote = Typert RPC client 门面（@deepseek-ai/dsh-api-gateway/client 提供），
+// 经 $mount(TYPERT_REMOTE) 挂载后 ctx.remote.matrixWorkbench.* 调用工作台镜像/命令。
+export const inject = ['slots', 'configForms', 'connection', 'locale', 'remote']
 
-/** settings namespace（与 Host settings.ts 的 MATRIX_NS 一致）。 */
-const MATRIX_NS = 'dsh-matrix'
+/** settings namespace = Host 插件 entry id（cordis.patch.yml 的 insert.id = 'matrix'）。
+ *  dsh 0.1.7 里 settings namespace 即 entry id（SettingsForms.describe 的 ns = entry.options.id）。 */
+const MATRIX_NS = 'matrix'
 
-/** 从 settingsScope 绑定某 namespace，返回 scope（未就绪返回 undefined）。 */
+/**
+ * $mount(TYPERT_REMOTE) 的完成信号（模块级单例，跨 apply 与组件共享）。
+ * 不能用 ctx.workbenchReady = ... 裸赋值：Cordis 的 ctx 是 Proxy，对未 provide
+ * 的属性赋值会抛 "cannot set property without provide"（client 插件 apply 的 ctx
+ * 有 runtime，非 root），直接导致 apply 抛错 → entry activate 失败。
+ */
+let workbenchReadyPromise = undefined
+
+/** 从 configForms 取本插件的表单控制器（未就绪返回 undefined）。
+ *  ConfigFormController 自带 getSnapshot()/subscribe()/set()/unset()/mutate()。 */
 function bindScope(ctx, namespace) {
-  const settingsScope = ctx.get('settingsScope')
-  if (settingsScope === undefined) return undefined
+  const configForms = ctx.get('configForms')
+  if (configForms === undefined) return undefined
   try {
-    return settingsScope.bind({ namespace })
+    return configForms.get(namespace)
   } catch {
     return undefined
   }
 }
 
-/** 从 scope 快照取 section（value 优先，否则 base）。 */
+/** 从表单控制器快照取 section（value 优先，否则 base）。
+ *  ConfigFormController.getSnapshot() 返回 { status, value, base, user, revision, writable, mode }。 */
 function sectionOf(scope) {
   if (scope === undefined) return undefined
   const snap = scope.getSnapshot()
+  if (snap === undefined) return undefined
+  if (snap.status === 'unavailable' || snap.status === 'loading') return undefined
   return snap.value ?? snap.base ?? undefined
+}
+
+/**
+ * 分身工作台 Typert Remote 数据通道：统一封装「等 $mount 就绪 + 轮询拉取镜像 + 发命令」。
+ *
+ * 用法：
+ *   const { data, send } = useWorkbenchRemote(ctx, 'getTaskBoard', fallback, pollMs)
+ *   - data：最新镜像快照（轮询刷新）；未就绪时为 fallback。
+ *   - send(method, ...args)：发命令（fire-and-forget，返回 Promise<RemoteResult>）。
+ *
+ * 实现：apply 里已把 $mount 结果挂到 ctx.workbenchReady（Promise），组件等它 resolve 后
+ * 用 ctx.remote.matrixWorkbench[method]() 拉取。命令执行后 Host 更新镜像，下一次轮询自动
+ * 反映（无需事件推送）。
+ */
+function useWorkbenchRemote(ctx, method, fallback, pollMs = 3000) {
+  const [data, setData] = React.useState(fallback)
+  React.useEffect(() => {
+    let cancelled = false
+    let timer = undefined
+    const ns = () => {
+      const r = ctx.get('remote')
+      return r && r.matrixWorkbench ? r.matrixWorkbench : undefined
+    }
+    const pull = async () => {
+      const wb = ns()
+      if (wb === undefined) return
+      const fn = wb[method]
+      if (typeof fn !== 'function') return
+      try {
+        const result = await fn()
+        // RemoteResult：{ ok:true, value } | { ok:false, error }
+        if (!cancelled && result !== undefined && result.ok === true) {
+          setData(result.value)
+        }
+      } catch { /* 单次拉取失败忽略，等下一轮 */ }
+    }
+    const ready = workbenchReadyPromise
+    const start = () => {
+      void pull()
+      timer = setInterval(() => void pull(), pollMs)
+    }
+    if (ready === undefined) {
+      // 无 workbenchReady（apply 未挂载 remote）→ 直接尝试轮询。
+      start()
+    } else {
+      void ready.then(() => {
+        if (cancelled) return
+        start()
+      })
+    }
+    return () => {
+      cancelled = true
+      if (timer !== undefined) clearInterval(timer)
+    }
+  }, [ctx, method, pollMs])
+
+  /** 发命令（Client→Host）：fire-and-forget，返回 RemoteResult。 */
+  const send = React.useCallback((cmd, ...args) => {
+    const r = ctx.get('remote')
+    const wb = r && r.matrixWorkbench ? r.matrixWorkbench : undefined
+    const fn = wb ? wb[cmd] : undefined
+    if (typeof fn !== 'function') return Promise.resolve(undefined)
+    return Promise.resolve(fn(...args))
+  }, [ctx])
+
+  return { data, send }
 }
 
 /**
@@ -479,16 +564,6 @@ function mergeFormSection(section) {
   }
   return base
 }
-
-/** 保存时把 form 收拢后整体写 settings。 */
-function collectFormForSave(form) {
-  const rest = {}
-  for (const [k, v] of Object.entries(form)) {
-    rest[k] = v
-  }
-  return rest
-}
-
 /** 主设置页：单入口 + 内部标签页。 */
 function MatrixSettingsPage(props) {
   const ctx = props.ctx
@@ -510,12 +585,33 @@ function MatrixSettingsPage(props) {
   const conn = ctx.get('connection')
   const catalogs = useRuntimeCatalogs(conn)
 
+  // dirty 追踪：只写用户实际改动过的字段。避免把非 volatile 字段（homeserverUrl/userId/
+  // accessToken/instanceKey/owner/provider）也塞进 scope.set——那些字段 set 必然失败（"not
+  // volatile"），失败还会触发 recover()→mirror.load()→subscribe 重置 form，导致界面回弹、
+  // 用户误以为「保存不成功」。
+  const [dirtyFields, setDirtyFields] = React.useState(() => new Set())
+
   const set = (field) => (value) => {
     setForm((prev) => Object.assign({}, prev, { [field]: value }))
+    setDirtyFields((prev) => {
+      const next = new Set(prev)
+      next.add(field)
+      return next
+    })
     setSaved(false)
   }
   const save = () => {
-    applyScope(scope, collectFormForSave(form)).then(() => setSaved(true)).catch(() => setSaved(false))
+    // 只写 dirty 字段；避免写非 volatile 字段（其 set 失败会触发 recover/form 重置）。
+    const patch = {}
+    for (const field of dirtyFields) {
+      const value = form[field]
+      if (value === undefined || value === null) continue
+      patch[field] = value
+    }
+    applyScope(scope, patch).then(() => {
+      setSaved(true)
+      setDirtyFields(new Set())
+    }).catch(() => setSaved(false))
   }
 
   // 各 tab 的字段清单（用于「重置为默认」）。
@@ -582,23 +678,14 @@ function MatrixSettingsPage(props) {
 
 /** 从 dsh-matrix settings 读自我时间线快照（运行时镜像，仅元数据）。 */
 function useTimelineSnapshot(ctx) {
-  const [scope] = React.useState(() => bindScope(ctx, MATRIX_NS))
-  const [snapshot, setSnapshot] = React.useState(undefined)
-  React.useEffect(() => {
-    const update = () => {
-      const section = sectionOf(scope)
-      // section 就绪但无快照字段：视为空快照（避免永久"加载中"）。
-      if (section !== undefined) {
-        setSnapshot(section.timelineSnapshot !== undefined
-          ? section.timelineSnapshot
-          : { entries: [], updatedAt: 0 })
-      }
-    }
-    update()
-    if (scope !== undefined) return scope.subscribe(update)
-    return undefined
-  }, [scope])
-  return { scope, snapshot }
+  const { data: snapshot, send } = useWorkbenchRemote(ctx, 'getTimeline', { entries: [], updatedAt: 0 })
+  const removeEntry = (id) => {
+    void send('handleTimelineOps', { clearSeq: 0, removeIds: [id] })
+  }
+  const clearAll = () => {
+    void send('handleTimelineOps', { clearSeq: Date.now(), removeIds: [] })
+  }
+  return { snapshot, removeEntry, clearAll }
 }
 
 /** 时间线动作类型中文标签（无原文，仅元数据）。 */
@@ -671,7 +758,7 @@ function entryMetaText(e) {
 /** 「分身工作台 → 时间线」：按任务活动段聚合的里程碑列表（默认展示详情），支持搜索/筛选。 */
 function TimelineTab(props) {
   const ctx = props.ctx
-  const { scope, snapshot } = useTimelineSnapshot(ctx)
+  const { snapshot, removeEntry, clearAll } = useTimelineSnapshot(ctx)
   const entries = (snapshot !== undefined && Array.isArray(snapshot.entries)) ? snapshot.entries : []
   const [q, setQ] = React.useState('')
   const [actorFilter, setActorFilter] = React.useState('all')
@@ -685,14 +772,6 @@ function TimelineTab(props) {
   })
   const groups = groupTimelineMilestones(visible)
 
-  const removeEntry = (id) => {
-    if (scope === undefined) return
-    scope.set('timelineOps', { removeIds: [id] }).catch(() => {})
-  }
-  const clearAll = () => {
-    if (scope === undefined) return
-    scope.set('timelineOps', { clearSeq: Date.now() }).catch(() => {})
-  }
   const fmtRoom = (roomId) => (roomId !== undefined && roomId.length > 24 ? roomId.slice(0, 24) + '…' : (roomId ?? '?'))
 
   return React.createElement('div', null,
@@ -720,46 +799,45 @@ function TimelineTab(props) {
         style: { ...SMALL_BTN, background: 'var(--dsw-alias-state-error-primary)', color: 'var(--dsw-alias-bg-base)' },
         onClick: clearAll,
       }, '清空全部')),
-    snapshot === undefined
-      ? React.createElement('p', { style: HINT_STYLE }, '时间线加载中…')
-      : groups.length === 0
-        ? React.createElement('p', { style: HINT_STYLE }, kw !== '' ? '无匹配记录。' : '暂无里程碑记录。分身收到任务/回复/请示后会出现在这里。')
-        : React.createElement('div', { style: { border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px' } },
-            groups.map((g) => {
-              const actorLabel = g.actor === 'secretary' ? '秘书' : '干活'
-              const whenStart = g.newest ? new Date(g.newest).toLocaleString('zh-CN', { hour12: false }) : ''
-              const whenOld = g.oldest && g.oldest !== g.newest ? new Date(g.oldest).toLocaleString('zh-CN', { hour12: false }) : ''
-              return React.createElement('div', {
-                key: g.key + '@' + g.newest,
-                style: { borderBottom: '1px solid var(--dsw-alias-border-l1)' },
+    groups.length === 0
+      ? React.createElement('p', { style: HINT_STYLE }, kw !== '' ? '无匹配记录。' : '暂无里程碑记录。分身收到任务/回复/请示后会出现在这里。')
+      : React.createElement('div', { style: { border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px' } },
+          groups.map((g) => {
+            const actorLabel = g.actor === 'secretary' ? '秘书' : '干活'
+            const whenStart = g.newest ? new Date(g.newest).toLocaleString('zh-CN', { hour12: false }) : ''
+            const whenOld = g.oldest && g.oldest !== g.newest ? new Date(g.oldest).toLocaleString('zh-CN', { hour12: false }) : ''
+            return React.createElement('div', {
+              key: g.key + '@' + g.newest,
+              style: { borderBottom: '1px solid var(--dsw-alias-border-l1)' },
+            },
+              React.createElement('div', {
+                style: { display: 'flex', alignItems: 'baseline', gap: '10px', padding: '8px 12px', background: 'var(--dsw-alias-bg-layer-0)' },
               },
-                React.createElement('div', {
-                  style: { display: 'flex', alignItems: 'baseline', gap: '10px', padding: '8px 12px', background: 'var(--dsw-alias-bg-layer-0)' },
-                },
-                  React.createElement('span', { style: { fontSize: '12px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)', whiteSpace: 'nowrap' } },
-                    actorLabel + ' · ' + fmtRoom(g.roomId)),
-                  React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, groupSummary(g)),
-                  React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginLeft: 'auto', whiteSpace: 'nowrap' } },
-                    whenStart + (whenOld !== '' ? ' ~ ' + whenOld : ''))),
-                React.createElement('div', { style: { padding: '2px 12px 6px' } },
-                  g.items.map((e) => {
-                    const text = entryDetailText(e)
-                    const meta = entryMetaText(e)
-                    return React.createElement('div', {
-                      key: e.id,
-                      style: { display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '5px 0', borderBottom: '1px dashed var(--dsw-alias-border-l1)' },
-                    },
-                      React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'nowrap', marginTop: '2px', minWidth: '36px' } },
-                        timelineKindLabel(e.kind)),
-                      React.createElement('span', { style: { flex: 1, fontSize: '12px', color: 'var(--dsw-alias-label-primary)', minWidth: 0, overflowWrap: 'break-word', lineHeight: '18px' } },
-                        text !== '' ? text : '（无内容记录）'),
-                      React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'nowrap', marginTop: '2px' } }, meta),
-                      React.createElement('button', {
-                        style: { ...SMALL_BTN, background: 'transparent', border: '1px solid var(--dsw-alias-border-l1)', color: 'var(--dsw-alias-label-secondary)' },
-                        onClick: () => removeEntry(e.id),
-                      }, '删除'))
-                  })))
-            })))
+                React.createElement('span', { style: { fontSize: '12px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)', whiteSpace: 'nowrap' } },
+                  actorLabel + ' · ' + fmtRoom(g.roomId)),
+                React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, groupSummary(g)),
+                React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginLeft: 'auto', whiteSpace: 'nowrap' } },
+                  whenStart + (whenOld !== '' ? ' ~ ' + whenOld : ''))),
+              React.createElement('div', { style: { padding: '2px 12px 6px' } },
+                g.items.map((e) => {
+                  const text = entryDetailText(e)
+                  const meta = entryMetaText(e)
+                  return React.createElement('div', {
+                    key: e.id,
+                    style: { display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '5px 0', borderBottom: '1px dashed var(--dsw-alias-border-l1)' },
+                  },
+                    React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'nowrap', marginTop: '2px', minWidth: '36px' } },
+                      timelineKindLabel(e.kind)),
+                    React.createElement('span', { style: { flex: 1, fontSize: '12px', color: 'var(--dsw-alias-label-primary)', minWidth: 0, overflowWrap: 'break-word', lineHeight: '18px' } },
+                      text !== '' ? text : '（无内容记录）'),
+                    React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'nowrap', marginTop: '2px' } }, meta),
+                    React.createElement('button', {
+                      style: { ...SMALL_BTN, background: 'transparent', border: '1px solid var(--dsw-alias-border-l1)', color: 'var(--dsw-alias-label-secondary)' },
+                      onClick: () => removeEntry(e.id),
+                    }, '删除'))
+                })))
+          }))
+  )
 }
 
 
@@ -802,21 +880,7 @@ const RECEPTION_PLACEHOLDER_HINT = '占位符：{{lp}} 发送者短名 · {{task
 /** 任务看板：读 taskBoard 镜像，展示各房间当前忙/待交付/请示中状态（房间级聚合）。 */
 function TaskBoardTab(props) {
   const ctx = props.ctx
-  const [scope] = React.useState(() => bindScope(ctx, MATRIX_NS))
-  const [board, setBoard] = React.useState(undefined)
-  React.useEffect(() => {
-    const update = () => {
-      const section = sectionOf(scope)
-      if (section !== undefined) {
-        setBoard(section.taskBoard !== undefined
-          ? section.taskBoard
-          : { rows: [], updatedAt: 0 })
-      }
-    }
-    update()
-    if (scope !== undefined) return scope.subscribe(update)
-    return undefined
-  }, [scope])
+  const { data: board } = useWorkbenchRemote(ctx, 'getTaskBoard', { rows: [], updatedAt: 0 })
 
   const rows = board !== undefined ? (board.rows ?? []) : []
   const fmtRoom = (r) => (r.roomName !== undefined && r.roomName !== '' && r.roomName !== r.roomId)
@@ -840,17 +904,15 @@ function TaskBoardTab(props) {
   return React.createElement('div', null,
     React.createElement('p', { style: HINT_STYLE },
       '各房间当前任务状态（房间级聚合，仅活跃态）。数字人正在处理任务、有待交付结果、或请示中等待拍板时会出现在这里。'),
-    board === undefined
-      ? React.createElement('p', { style: HINT_STYLE }, '任务看板加载中…')
-      : rows.length === 0
-        ? React.createElement('p', { style: HINT_STYLE }, '暂无进行中任务。同事派活后，对应房间会出现在这里。')
-        : React.createElement('div', null,
-            rows.map((r) => {
-              const meta = stateMeta(r.state)
-              return React.createElement('div', {
-                key: r.roomId,
-                style: {
-                  display: 'flex', alignItems: 'center', gap: '10px',
+    rows.length === 0
+      ? React.createElement('p', { style: HINT_STYLE }, '暂无进行中任务。同事派活后，对应房间会出现在这里。')
+      : React.createElement('div', null,
+          rows.map((r) => {
+            const meta = stateMeta(r.state)
+            return React.createElement('div', {
+              key: r.roomId,
+              style: {
+                display: 'flex', alignItems: 'center', gap: '10px',
                   padding: '10px 12px', marginBottom: '6px',
                   border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px',
                   background: 'var(--dsw-alias-bg-layer-1)',
@@ -873,25 +935,10 @@ function TaskBoardTab(props) {
 /** 主人收件箱：读 ownerInbox 镜像，主人点「批准/交付/拒绝」写 ownerDecisionOps 命令。 */
 function OwnerInboxTab(props) {
   const ctx = props.ctx
-  const [scope] = React.useState(() => bindScope(ctx, MATRIX_NS))
-  const [inbox, setInbox] = React.useState(undefined)
-  React.useEffect(() => {
-    const update = () => {
-      const section = sectionOf(scope)
-      if (section !== undefined) {
-        setInbox(section.ownerInbox !== undefined
-          ? section.ownerInbox
-          : { items: [], updatedAt: 0 })
-      }
-    }
-    update()
-    if (scope !== undefined) return scope.subscribe(update)
-    return undefined
-  }, [scope])
+  const { data: inbox, send } = useWorkbenchRemote(ctx, 'getOwnerInbox', { items: [], updatedAt: 0 })
 
   const decide = (id, decision) => {
-    if (scope === undefined) return
-    scope.set('ownerDecisionOps', { seq: Date.now(), id, decision }).catch(() => {})
+    void send('handleOwnerDecisionOps', { seq: Date.now(), id, decision })
   }
 
   const items = inbox !== undefined ? (inbox.items ?? []) : []
@@ -930,25 +977,10 @@ function OwnerInboxTab(props) {
 /** 岗位管理：读 jobBoard 镜像，展示「默认岗位 + 已安装岗位 + 每房间岗位」，点切换写 jobSwitchOps 命令。 */
 function JobBoardTab(props) {
   const ctx = props.ctx
-  const [scope] = React.useState(() => bindScope(ctx, MATRIX_NS))
-  const [board, setBoard] = React.useState(undefined)
-  React.useEffect(() => {
-    const update = () => {
-      const section = sectionOf(scope)
-      if (section !== undefined) {
-        setBoard(section.jobBoard !== undefined
-          ? section.jobBoard
-          : { defaultPresetId: 'standard', installedPresets: [], rows: [], updatedAt: 0 })
-      }
-    }
-    update()
-    if (scope !== undefined) return scope.subscribe(update)
-    return undefined
-  }, [scope])
+  const { data: board, send } = useWorkbenchRemote(ctx, 'getJobBoard', { defaultPresetId: 'standard', installedPresets: [], rows: [], updatedAt: 0 })
 
   const switchPreset = (roomId, presetId) => {
-    if (scope === undefined) return
-    scope.set('jobSwitchOps', { seq: Date.now(), roomId, presetId }).catch(() => {})
+    void send('handleJobSwitchOps', { seq: Date.now(), roomId, presetId })
   }
 
   const b = board !== undefined ? board : { defaultPresetId: 'standard', installedPresets: [], rows: [] }
@@ -1008,21 +1040,8 @@ function JobBoardTab(props) {
 function TwinDeskButton(props) {
   const ctx = props.ctx
   const wide = props.wide !== false
-  const [scope] = React.useState(() => bindScope(ctx, MATRIX_NS))
-  const [inbox, setInbox] = React.useState(undefined)
-  const [board, setBoard] = React.useState(undefined)
-  React.useEffect(() => {
-    const update = () => {
-      const section = sectionOf(scope)
-      if (section !== undefined) {
-        setInbox(section.ownerInbox !== undefined ? section.ownerInbox : { items: [], updatedAt: 0 })
-        setBoard(section.taskBoard !== undefined ? section.taskBoard : { rows: [], updatedAt: 0 })
-      }
-    }
-    update()
-    if (scope !== undefined) return scope.subscribe(update)
-    return undefined
-  }, [scope])
+  const { data: inbox } = useWorkbenchRemote(ctx, 'getOwnerInbox', { items: [], updatedAt: 0 })
+  const { data: board } = useWorkbenchRemote(ctx, 'getTaskBoard', { rows: [], updatedAt: 0 })
   const [open, setOpen] = React.useState(false)
   const attention = inbox !== undefined ? (inbox.items ?? []).length : 0
   const active = board !== undefined ? (board.rows ?? []).length : 0
@@ -1136,6 +1155,24 @@ function TwinDeskPanel(props) {
 
 /** 插件入口：注册设置页 + 分身工作台（会话头部入口）。 */
 export function apply(ctx) {
+  // 挂载分身工作台 Typert Remote 描述符：经 ctx.remote.matrixWorkbench.* 读镜像/发命令。
+  // $mount 失败不阻断设置页（工作台数据降级为空态）。
+  const mountPromise = (async () => {
+    const remote = ctx.get('remote')
+    if (remote === undefined || typeof remote.$mount !== 'function') {
+      console.warn('[dsh-matrix-agent] ctx.remote 不可用，分身工作台实时数据降级为空态')
+      return undefined
+    }
+    try {
+      return await remote.$mount(TYPERT_REMOTE)
+    } catch (error) {
+      console.warn('[dsh-matrix-agent] $mount(matrixWorkbench) failed:', error)
+      return undefined
+    }
+  })()
+  // 把 mount 完成信号暴露给组件（模块级变量，见顶部 workbenchReadyPromise 说明）。
+  workbenchReadyPromise = mountPromise
+
   ctx.slots.inject('settings.section', () => ctx.slots.register(
     { name: 'settings.section', id: 'dsh-matrix', order: 30, label: () => '数字分身' },
     (props) => React.createElement(MatrixSettingsPage, Object.assign({ ctx }, props)),
