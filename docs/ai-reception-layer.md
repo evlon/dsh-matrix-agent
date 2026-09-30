@@ -195,7 +195,7 @@ dsh-matrix:
   receptionModel: ""           # 空=沿用 worker 的 model（建议填轻量快模型）
   receptionReasoningEffort: off  # 恒 off：接待判定必须快，不需要思考
   receptionPreset: reception     # preset id（默认 reception，可换）
-  receptionEnabled: true         # false=退回纯正则接待（降级总开关）
+  receptionEnabled: true         # 0.5.1 起默认 true（默认启用 AI 接待）；false=退回纯正则接待（降级总开关）
   receptionKinds: { ... }        # 分类标签表（见 §4.2b；内置 5 类默认，可增删改）
   # 表外散键（非分类场景的独立话术，保留现状）：
   receptionRejected: "主人暂时不同意开工，任务「{{summary}}」先搁置。"

@@ -41,3 +41,6 @@
         # 本进程只跑一个分身；其它分身（如 @ai-xxxxxxx-dev）请用独立 profile/进程
         digitalTwinMode: false
         digitalTwins: []
+        # ── 以下为 volatile 字段（可在设置页热改），默认值已内置，通常无需写进 patch ──
+        # AI 接待层（receptionEnabled）0.5.1 起默认启用（true）：入站消息先经接待 agent
+        # 语义分类，判定失败/超时才回退正则兜底。若新环境需关闭，显式写 receptionEnabled: false。
