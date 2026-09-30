@@ -340,7 +340,7 @@ export interface Config {
   receptionGiveUp: string
 
   // ========== AI 接待层（Reception as an Agent） ==========
-  /** 是否启用 AI 接待判定（入站消息先经接待 agent 语义分类）。false=回退纯正则接待。默认 false（渐进开启）。 */
+  /** 是否启用 AI 接待判定（入站消息先经接待 agent 语义分类）。false=回退纯正则接待。默认 true（默认启用 AI 接待）。 */
   receptionEnabled: boolean
   /** 接待会话挂载的 agent preset id（默认 reception，可换）。 */
   receptionPreset: string
@@ -489,7 +489,7 @@ export const Config = Schema.object({
   receptionRejected: Schema.string().default('[前台接待] 主人暂时不同意开工，任务「{{summary}}」先搁置。').volatile(),
   receptionGiveUp: Schema.string().default('[前台接待] 我正在整理「{{summary}}」，结果稍后同步，请稍等～').volatile(),
 
-  receptionEnabled: Schema.boolean().default(false).volatile(),
+  receptionEnabled: Schema.boolean().default(true).volatile(),
   receptionPreset: Schema.string().default('reception').volatile(),
   receptionProvider: Schema.string().default('').volatile(),
   receptionModel: Schema.string().default('').volatile(),

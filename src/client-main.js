@@ -543,7 +543,7 @@ const FORM_DEFAULTS = {
   receptionRejected: '[前台接待] 主人暂时不同意开工，任务「{{summary}}」先搁置。',
   receptionGiveUp: '[前台接待] 我正在整理「{{summary}}」，结果稍后同步，请稍等～',
   // AI 接待层（reception）。
-  receptionEnabled: false,
+  receptionEnabled: true,
   receptionPreset: 'reception',
   receptionProvider: '',
   receptionModel: '',
